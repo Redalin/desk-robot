@@ -28,13 +28,17 @@ void Link::begin(const char* ssid, const char* pass, const char* host,
 }
 
 void Link::update(uint32_t nowMs) {
+  static uint32_t lastCheckMs = 0;
   bool wifiUp = WiFi.status() == WL_CONNECTED;
   if (wifiUp && !wifiReported_) {
-    Serial.printf("wifi: connected, ip %s\n", WiFi.localIP().toString().c_str());
+    Serial.printf("wifi: connected, ip %s (RSSI: %d dBm)\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
     wifiReported_ = true;
   } else if (!wifiUp && wifiReported_) {
     Serial.println(F("wifi: lost, retrying"));
     wifiReported_ = false;
+  } else if (!wifiUp && (nowMs - lastCheckMs > 4000)) {
+    lastCheckMs = nowMs;
+    Serial.printf("wifi: status %d (connecting to \"%s\")...\n", WiFi.status(), ssid_ ? ssid_ : "");
   }
   if (!wifiUp) return;  // the WiFi stack reconnects by itself
 
@@ -49,9 +53,18 @@ void Link::sendJson(const String& json) {
 void Link::sendBinary(uint8_t type, const uint8_t* data, size_t len) {
   if (!connected_) return;
   static uint8_t* buf = nullptr;
-  static const size_t CAP = 64 * 1024;  // mic frames are ~1 KB, JPEGs ~10-20 KB
-  if (buf == nullptr) buf = static_cast<uint8_t*>(ps_malloc(CAP));
-  if (buf == nullptr || len > CAP - 1) return;
+  static size_t bufCap = 0;
+  if (buf == nullptr) {
+    bufCap = 64 * 1024;
+    buf = static_cast<uint8_t*>(ps_malloc(bufCap));
+    if (buf == nullptr) {
+      // SuperMini has internal SRAM only (no PSRAM).
+      // Mic frames are ~1 KB, so allocate 4 KB in internal RAM:
+      bufCap = 4096;
+      buf = static_cast<uint8_t*>(malloc(bufCap));
+    }
+  }
+  if (buf == nullptr || len > bufCap - 1) return;
   buf[0] = type;
   memcpy(buf + 1, data, len);
   ws_.sendBIN(buf, len + 1);
@@ -88,8 +101,17 @@ void Link::onEvent(WStype_t type, uint8_t* payload, size_t length) {
       if (connected_) {
         Serial.println(F("brain: disconnected, will retry"));
         if (onState_) onState_(false);
+      } else {
+        static uint32_t lastFailMs = 0;
+        if (millis() - lastFailMs > 4000) {
+          lastFailMs = millis();
+          Serial.println(F("brain: connection failed, retrying..."));
+        }
       }
       connected_ = false;
+      break;
+    case WStype_ERROR:
+      Serial.println(F("brain: websocket error"));
       break;
     case WStype_TEXT: {
       // Copy so we can guarantee a terminator.
@@ -99,6 +121,11 @@ void Link::onEvent(WStype_t type, uint8_t* payload, size_t length) {
     }
     case WStype_BIN:
       if (length > 1 && payload[0] == 0x01 && onAudio_) {
+        static uint32_t audioFramesRecv = 0;
+        audioFramesRecv++;
+        if (audioFramesRecv == 1 || (audioFramesRecv % 25 == 0)) {
+          Serial.printf("[link] <- audio frame #%u (%u bytes)\n", static_cast<unsigned>(audioFramesRecv), static_cast<unsigned>(length - 1));
+        }
         onAudio_(payload + 1, length - 1);
       }
       break;
@@ -116,16 +143,21 @@ void Link::handleMessage(const char* json) {
   const char* type = doc["type"] | "";
   String cmd;
   if (!strcmp(type, "emotion")) {
+    Serial.printf("[link] <- emo %s\n", doc["name"] | "neutral");
     cmd = String("emo ") + (doc["name"] | "neutral");
   } else if (!strcmp(type, "pan") || !strcmp(type, "tilt")) {
     cmd = String(type) + " " + String(doc["deg"] | 0.0f, 1);
   } else if (!strcmp(type, "speak_begin")) {
+    Serial.printf("[link] <- speak_begin (bytes: %d)\n", doc["bytes"] | 0);
     cmd = String("speak_begin ") + String(doc["bytes"] | 0);
   } else if (!strcmp(type, "speak_end")) {
+    Serial.println(F("[link] <- speak_end"));
     cmd = type;
   } else if (!strcmp(type, "volume")) {
+    Serial.printf("[link] <- volume %.2f\n", static_cast<float>(doc["level"] | 0.5f));
     cmd = String("volume ") + String(doc["level"] | 0.5f, 2);
   } else if (!strcmp(type, "mic")) {
+    Serial.printf("[link] <- mic %s\n", (doc["on"] | false) ? "on" : "off");
     cmd = String("mic ") + ((doc["on"] | false) ? "on" : "off");
   } else if (!strcmp(type, "glance")) {
     cmd = String("glance ") + ((doc["on"] | true) ? "on" : "off");
@@ -134,7 +166,7 @@ void Link::handleMessage(const char* json) {
   } else if (!strcmp(type, "stream")) {
     cmd = String("stream ") + ((doc["on"] | false) ? "on " : "off ") + String(doc["fps"] | 10.0f, 1);
   } else {
-    Serial.printf("brain: unknown message type \"%s\"\n", type);
+    Serial.printf("[link] <- unknown message: %s\n", type);
     return;
   }
   if (onCommand_) onCommand_(cmd);

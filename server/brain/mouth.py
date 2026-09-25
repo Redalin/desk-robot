@@ -270,14 +270,16 @@ def _synthesize_builtin(text: str) -> bytes:
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
         path = f.name
     try:
-        if sys.platform == "darwin":
+        if shutil.which("piper"):
+            cmd = ["piper", "--model", getattr(config, "PIPER_MODEL", "en_US-lessac-medium"), "--output_file", path]
+        elif sys.platform == "darwin":
             cmd = ["say", "-v", config.TTS_FALLBACK_VOICE, "-o", path, "--data-format=LEI16@16000"]
         elif sys.platform == "win32":
             cmd = ["powershell", "-NoProfile", "-NonInteractive", "-Command", _WINDOWS_TTS, path]
         elif shutil.which("espeak-ng") or shutil.which("espeak"):
             cmd = [shutil.which("espeak-ng") or "espeak", "--stdin", "-w", path]
         else:
-            raise NoBuiltinVoice("no built-in voice on this system (install espeak-ng, or set FISH_AUDIO_API_KEY)")
+            raise NoBuiltinVoice("no built-in voice on this system (install piper-tts, espeak-ng, or set FISH_AUDIO_API_KEY)")
         subprocess.run(cmd, input=text.encode(), check=True, timeout=60)
         with open(path, "rb") as f:
             wav = f.read()

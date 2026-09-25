@@ -78,6 +78,7 @@ TTS_PRESENCE_DB = 0.0
 # Text-to-speech. The voice comes from Fish Audio (TTS_VOICE_ID above).
 TTS_FALLBACK_VOICE = "Fred"  # built-in voice used until Fish Audio is set up: a macOS `say`
                              # voice name (`say -v ?` lists them); Windows and Linux use their default
+PIPER_MODEL = os.environ.get("PIPER_MODEL", "en_US-lessac-medium")  # local neural voice if piper is installed
 # Loudness. Fish's level wanders from line to line, so the audio goes through
 # an automatic gain control (mouth.Leveler) that holds it near TTS_LEVEL
 # (RMS, 0..1) using at most TTS_MAX_GAIN of boost, with a soft limiter on
@@ -104,6 +105,9 @@ WAKE_PHRASES = [  # what speech-to-text tends to hear for "hey Rocky"
     "hi rocky",
     "a rocky",
     "hey ricky",
+    "hello rocky",
+    "ok rocky",
+    "rocky",
 ]
 STT_MODEL = "base.en"    # faster-whisper model: base.en ~0.3 s per utterance on an Apple
                          # Silicon Mac, small.en hears a little better but takes ~1 s
@@ -127,7 +131,7 @@ MIC_DEVICE = os.environ.get("MIC_DEVICE") or None  # local input by name (set MI
 # re-checking every TURN_RECHECK_SECONDS, and gives up waiting after
 # TURN_MAX_SILENCE seconds of quiet. If Rocky keeps cutting you off, raise
 # TURN_THRESHOLD; if he waits too long after you finish, lower it.
-VAD_THRESHOLD = 0.4
+VAD_THRESHOLD = 0.25
 TURN_PAUSE_SECONDS = 0.2
 TURN_RECHECK_SECONDS = 0.6
 TURN_MAX_SILENCE = 2.5
@@ -160,12 +164,12 @@ EMOTIONS = [
     "thinking",
 ]
 
-# Camera. The robot streams small JPEGs while connected; the live view
-# is at http://localhost:<LIVE_VIEW_PORT>/ on this computer.
+# Camera. Set HAVE_CAMERA = False when no camera module is connected.
+HAVE_CAMERA = os.environ.get("HAVE_CAMERA", "false").lower() in ("1", "true", "yes")
 CAMERA_FPS = 10
 LIVE_VIEW_PORT = 8766
 LIVE_VIEW_BIND = "127.0.0.1"  # this computer only. "0.0.0.0" would show the camera to the whole LAN.
-SEND_CAMERA_TO_BRAIN = True  # let Rocky see the camera when a question is about seeing
+SEND_CAMERA_TO_BRAIN = False  # disabled because no camera is connected
 # A frame is attached only when the question is about seeing (any of these
 # words or phrases). Everyday words like "this", "that", "here", "there" and
 # "right" are deliberately NOT in the list: they made him describe the room

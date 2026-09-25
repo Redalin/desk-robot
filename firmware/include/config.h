@@ -1,68 +1,98 @@
 #pragma once
 
-// ─── Pin map (XIAO ESP32S3 Sense) ────────────────────────────────────────────
-// Silkscreen label → GPIO number. The camera, PDM mic, and SD slot on the
-// Sense expansion board use their own internal pins and don't appear here.
+#include <Arduino.h>
+
+// ─── Pin Map (ESP32-S3 SuperMini) ────────────────────────────────────────────
 //
-//   D0  = GPIO1   I2S BCLK  → MAX98357A BCLK      (speaker)
-//   D1  = GPIO2   I2S LRC   → MAX98357A LRC       (speaker)
-//   D2  = GPIO3   I2S DIN   → MAX98357A DIN       (speaker)
-//   D3  = GPIO4   pan servo signal (orange wire)
-//   D4  = GPIO5   I2C SDA   → OLED SDA
-//   D5  = GPIO6   I2C SCL   → OLED SCL
-//   D6  = GPIO43  tilt servo signal (orange wire)
-//   D7  = GPIO44  spare
+// Wiring Layout:
+//                           +------------------------+
+//                           |   ESP32-S3 SuperMini   |
+//                           |       [ USB-C ]        |
+//                           +---+----------------+---+
+//               +5V (USB-C) | 1 | 5V           TX| 1 | ---> INMP441 WS (GPIO 43)
+//                    Ground | 2 | GND          RX| 2 | ---> (Leave Free / Serial RX)
+//         INMP441 VDD (+3V3)| 3 | 3V3           1| 3 | ---> INMP441 SD (Data Out -> GPIO 1)
+//          (Optional BLK)   | 4 | 13            2| 4 | ---> Touch 2 (Cheek / Mute / Sleep)
+//    GC9A01 SCL (SPI Clock) | 5 | 12            3| 5 | ---> INMP441 SCK (Clock -> GPIO 3)
+//     GC9A01 SDA (SPI MOSI) | 6 | 11            4| 6 | ---> Touch 1 (Head / Pet / Talk)
+//         GC9A01 CS (Chip)  | 7 | 10            5| 7 | ---> I2S BCLK  --+--> Amp 1 & 2 BCLK
+//        GC9A01 DC (Data)   | 8 | 9             6| 8 | ---> I2S LRC   --+--> Amp 1 & 2 LRC
+//       GC9A01 RES (Reset)  | 9 | 8             7| 9 | ---> I2S DIN   --+--> Amp 1 & 2 DIN
+//                           +---+----------------+---+
+//
+// INMP441 / MS3625 I2S MEMS Microphone Module Wiring:
+//   - VDD  ---> ESP32 3V3 (Left Pin 3)
+//   - GND  ---> ESP32 GND (Left Pin 2)
+//   - SD   ---> ESP32 GPIO 1 (Right Pin 3)
+//   - SCK  ---> ESP32 GPIO 3 (Right Pin 5)
+//   - WS   ---> ESP32 TX / GPIO 43 (Right Pin 1)
+//   - L/R  ---> Connect to GND (selects Left audio channel)
 
-constexpr uint8_t PIN_SERVO_PAN = 4;   // D3
-constexpr uint8_t PIN_SERVO_TILT = 43; // D6
+// ─── Display (GC9A01 240x240 Round SPI TFT) ──────────────────────────────────
+constexpr uint8_t PIN_LCD_SCL = 12; // SPI Clock
+constexpr uint8_t PIN_LCD_SDA = 11; // SPI MOSI (Data)
+constexpr uint8_t PIN_LCD_CS  = 10; // Chip Select
+constexpr uint8_t PIN_LCD_DC  = 9;  // Data/Command
+constexpr uint8_t PIN_LCD_RES = 8;  // Hardware Reset
+constexpr uint8_t PIN_LCD_BLK = 13; // Backlight enable (optional)
 
-constexpr uint8_t PIN_I2S_BCLK = 1; // D0 → MAX98357A BCLK
-constexpr uint8_t PIN_I2S_LRC = 2;  // D1 → MAX98357A LRC
-constexpr uint8_t PIN_I2S_DIN = 3;  // D2 → MAX98357A DIN
+constexpr int SCREEN_W = 240;
+constexpr int SCREEN_H = 240;
 
-// I2C uses the XIAO's default Wire pins (SDA=GPIO5/D4, SCL=GPIO6/D5).
-// Most SH1106 modules answer at address 0x3C; U8g2 finds it automatically.
+// ─── Speaker (MAX98357A I2S Class-D Amps on I2S0) ────────────────────────────
+constexpr uint8_t PIN_I2S_BCLK = 5; // Bit Clock (shared by Amp 1 & 2)
+constexpr uint8_t PIN_I2S_LRC  = 6; // Word Select / Left-Right Clock
+constexpr uint8_t PIN_I2S_DIN  = 7; // Serial Data In
+constexpr float SPEAKER_VOLUME = 0.8f; // 0.0 - 1.0
 
-// ─── Motion limits ───────────────────────────────────────────────────────────
-constexpr float PAN_MIN_DEG = -60.0f; // head turn limit, left
-constexpr float PAN_MAX_DEG = 60.0f;  // head turn limit, right
-constexpr float PAN_MAX_SPEED = 180.0f; // deg/sec ceiling — keeps motion gentle
-constexpr float PAN_TRIM_DEG = 0.0f;    // tweak if the head isn't straight at 0
+// ─── Microphone Configuration (INMP441/MS3625 on I2S1 vs MAX9814 on ADC) ─────
+#ifndef MIC_TYPE_I2S
+#define MIC_TYPE_I2S 1   // 1 = Digital I2S (INMP441/MS3625), 0 = Analog (MAX9814)
+#endif
 
-// The reference build: the tilt platform hits the pan servo body if it tries to
-// look above eye level, so 0 (eye level) is the ceiling and it only nods down.
-constexpr float TILT_MIN_DEG = -60.0f;  // look-down limit
-constexpr float TILT_MAX_DEG = 0.0f;    // look-up limit (eye level is the mechanical stop)
+#if MIC_TYPE_I2S
+constexpr uint8_t PIN_MIC_SCK = 3;   // Bit Clock (SCK)       ---> GPIO 3
+constexpr uint8_t PIN_MIC_WS  = 43;  // Word Select (WS / LRC) ---> Header TX pin (GPIO 43)
+constexpr uint8_t PIN_MIC_SD  = 1;   // Serial Data In (SD)   ---> GPIO 1
+constexpr float MIC_GAIN      = 1.5f; // Digital sensitivity gain
+#else
+constexpr uint8_t PIN_MIC_ADC = 1;   // GPIO 1 = ADC1_CH0
+constexpr float MIC_GAIN      = 4.0f; // Analog gain
+#endif
+
+// ─── Touch Sensors (TTP223 Capacitive) ───────────────────────────────────────
+constexpr uint8_t PIN_TOUCH_HEAD  = 4; // Touch 1: Head / Pet / Talk
+constexpr uint8_t PIN_TOUCH_CHEEK = 2; // Touch 2: Cheek / Mute / Sleep
+
+// ─── Hardware Feature Flags ──────────────────────────────────────────────────
+#ifndef HAVE_SERVOS
+#define HAVE_SERVOS 0  // No servos wired: uses virtual easing neck for angles & gaze
+#endif
+
+#ifndef HAVE_CAMERA
+#define HAVE_CAMERA 0  // No camera module wired
+#endif
+
+#ifndef HAVE_TOUCH
+#define HAVE_TOUCH 1   // TTP223 capacitive touch enabled
+#endif
+
+// ─── Motion Limits (Virtual Neck / Servo) ────────────────────────────────────
+constexpr uint8_t PIN_SERVO_PAN  = 255;
+constexpr uint8_t PIN_SERVO_TILT = 255;
+
+constexpr float PAN_MIN_DEG   = -60.0f;
+constexpr float PAN_MAX_DEG   =  60.0f;
+constexpr float PAN_MAX_SPEED = 180.0f;
+constexpr float PAN_TRIM_DEG  =   0.0f;
+
+constexpr float TILT_MIN_DEG   = -60.0f;
+constexpr float TILT_MAX_DEG   =   0.0f;
 constexpr float TILT_MAX_SPEED = 120.0f;
-constexpr float TILT_TRIM_DEG = 0.0f;   // tweak so the head sits level at 0
-constexpr bool TILT_INVERT = true;      // flip if `tilt -20` looks up instead of down
-                                        // (true on the Adafruit pan-tilt with the OLED facing forward)
+constexpr float TILT_TRIM_DEG  =   0.0f;
+constexpr bool  TILT_INVERT    =  true;
 
-// Watch the mechanism the first time tilt moves: if the bracket strains at
-// either end of travel, pull TILT_MIN/MAX in until it stops.
-
-// Detach the servo after it has been at rest this long. A detached servo
-// doesn't buzz or burn power; the head is light enough to hold position.
 constexpr uint32_t SERVO_RELAX_MS = 1500;
 
-// ─── Microphone ──────────────────────────────────────────────────────────────
-// The Sense board's PDM mic is hard-wired to these GPIOs (no header pins).
-constexpr uint8_t PIN_PDM_CLK = 42;
-constexpr uint8_t PIN_PDM_DATA = 41;
-// Software gain on the mic samples. The PDM mic is quiet; raise if the brain
-// says "too quiet", lower if loud speech clips.
-constexpr float MIC_GAIN = 6.0f;
-
-// ─── Camera ──────────────────────────────────────────────────────────────────
-// The camera is mounted ribbon-up on the head, which puts the sensor upside
-// down: flip + mirror = rotate 180 degrees.
-constexpr bool CAMERA_VFLIP = true;
-constexpr bool CAMERA_HMIRROR = true;
-
-// ─── Speaker ─────────────────────────────────────────────────────────────────
-// 0.0-1.0 software volume for the MAX98357A. For more than 1.0 can give,
-// tie the amp's GAIN pin to GND (15 dB instead of the floating 9 dB).
-constexpr float SPEAKER_VOLUME = 0.7f;
-
 // ─── Behavior ────────────────────────────────────────────────────────────────
-constexpr uint32_t FRAME_INTERVAL_MS = 33; // ~30 FPS face animation
+constexpr uint32_t FRAME_INTERVAL_MS = 33; // ~30 FPS animation

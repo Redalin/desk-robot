@@ -4,6 +4,74 @@ Read this with the parts in hand. Nothing here is hard, but do the
 **power rules** section first — it's the difference between a happy robot
 and a rebooting one.
 
+## ESP32-S3 SuperMini Build (Current Branch)
+
+### Pinout Diagram
+
+```
+                            +------------------------+
+                            |   ESP32-S3 SuperMini   |
+                            |       [ USB-C ]        |
+                            +---+----------------+---+
+                +5V (USB-C) | 1 | 5V           TX| 1 | ---> INMP441 WS (GPIO 43)
+                     Ground | 2 | GND          RX| 2 | ---> (Leave Free / Serial RX)
+          INMP441 VDD (+3V3)| 3 | 3V3           1| 3 | ---> INMP441 SD (Data Out -> GPIO 1)
+     GC9A01 BLK (Backlight) | 4 | 13            2| 4 | ---> Touch 2 (Cheek / Mute / Sleep)
+     GC9A01 SCL (SPI Clock) | 5 | 12            3| 5 | ---> INMP441 SCK (Clock -> GPIO 3)
+      GC9A01 SDA (SPI MOSI) | 6 | 11            4| 6 | ---> Touch 1 (Head / Pet / Talk)
+          GC9A01 CS (Chip)  | 7 | 10            5| 7 | ---> I2S BCLK  --+--> Amp 1 & 2 BCLK
+         GC9A01 DC (Data)   | 8 | 9             6| 8 | ---> I2S LRC   --+--> Amp 1 & 2 LRC
+        GC9A01 RES (Reset)  | 9 | 8             7| 9 | ---> I2S DIN   --+--> Amp 1 & 2 DIN
+                            +---+----------------+---+
+```
+
+### Pin Connection Tables
+
+#### 1. Display: GC9A01 240x240 Round SPI TFT
+| GC9A01 Pin | ESP32-S3 SuperMini | Notes |
+| --- | --- | --- |
+| VCC | 3V3 (Pin 3) | Or 5V if module includes 3.3V LDO regulator |
+| GND | GND (Pin 2) | Common Ground |
+| SCL (SCLK) | GPIO 12 (Pin 5) | SPI Clock |
+| SDA (MOSI) | GPIO 11 (Pin 6) | SPI Data Out |
+| CS | GPIO 10 (Pin 7) | Chip Select |
+| DC | GPIO 9 (Pin 8) | Data / Command |
+| RES (RST) | GPIO 8 (Pin 9) | Hardware Reset |
+| BLK | GPIO 13 (Pin 4) | Backlight control (or tie to 3.3V) |
+
+#### 2. Microphone: INMP441 / MS3625 I2S MEMS Microphone
+| INMP441 Pin | ESP32-S3 SuperMini | Notes |
+| --- | --- | --- |
+| VDD | 3V3 (Pin 3) | 3.3V Power |
+| GND | GND (Pin 2) | Common Ground |
+| SD | GPIO 1 (Pin 3) | Serial Data Out to ESP32 |
+| SCK | GPIO 3 (Pin 5) | I2S Serial Clock |
+| WS | TX / GPIO 43 (Pin 1) | Word Select (Left/Right Clock) |
+| L/R | GND | Ties audio channel to Left |
+
+#### 3. Audio Output: MAX98357A I2S Class-D Amplifier
+| MAX98357A Pin | ESP32-S3 SuperMini | Notes |
+| --- | --- | --- |
+| Vin | 5V (Pin 1) | 5V power from USB rail |
+| GND | GND (Pin 2) | Common Ground |
+| BCLK | GPIO 5 (Pin 7) | I2S Bit Clock |
+| LRC | GPIO 6 (Pin 8) | I2S Word Select |
+| DIN | GPIO 7 (Pin 9) | I2S Data In |
+| GAIN | Unconnected / GND | Unconnected = 9dB, GND = 15dB |
+| SD | Unconnected | Default enabled |
+| Speaker +/- | Speaker Terminals | 4 Ω or 8 Ω speaker |
+
+#### 4. Touch Sensors: TTP223 Capacitive Touch
+| Sensor Pin | ESP32-S3 SuperMini | Notes |
+| --- | --- | --- |
+| Touch 1 OUT (Head) | GPIO 4 (Pin 6) | Head petting & wake |
+| Touch 2 OUT (Cheek)| GPIO 2 (Pin 4) | Cheek touch (mute/sleep) |
+| VCC / GND | 3V3 / GND | Common power & ground |
+
+---
+
+## Classic Build (Seeed XIAO ESP32S3 Sense)
+
 ## The XIAO's pins
 
 The XIAO ESP32S3 has 7 pins per side. Labels below match the silkscreen

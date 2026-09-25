@@ -1,14 +1,15 @@
 #pragma once
 
 #include <Arduino.h>
-#include <U8g2lib.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_GC9A01A.h>
 
-// Expressive two-eye face for a 128x64 mono OLED.
+// Expressive two-eye face for a 240x240 Round IPS TFT LCD (GC9A01).
 //
 // Eyes are rounded rectangles whose shape morphs smoothly between emotion
 // presets. Layered on top: blinks, gaze shifts, a glint in each eye, a mouth
 // that moves with the speaker's audio, per-emotion flourishes ("!" pop,
-// blush, tears, thinking dots, angry shake), and a sleep state with slow
+// blush, tears, thinking dots, angry steam), and a sleep state with slow
 // breathing and floating Z's.
 
 enum class Emotion : uint8_t {
@@ -27,7 +28,8 @@ bool emotionFromName(const char* name, Emotion& out);
 
 class Face {
  public:
-  explicit Face(U8G2& display) : u8g2_(display) {}
+  explicit Face(Adafruit_GC9A01A& display) : tft_(display) {}
+  ~Face();
 
   void begin();
   void setEmotion(Emotion e);
@@ -45,6 +47,9 @@ class Face {
   // When idle behavior is on, the face blinks and glances around on its own.
   void setIdle(bool on) { idle_ = on; }
 
+  // Neck gaze offset: allows virtual head turns to move eyes on the round screen.
+  void setNeckGaze(float gx, float gy) { neckGazeX_ = gx; neckGazeY_ = gy; }
+
   // Call every frame: advances animation, then renders.
   void update(uint32_t nowMs);
 
@@ -55,8 +60,8 @@ class Face {
     float eyeH;      // eye height
     float radius;    // corner rounding
     float browSlant; // top edge tilt: >0 inner corners drop (angry), <0 outer (sad)
-    float lowerLid;  // pushes up from below → happy crescent
-    float upperLid;  // droops from above → sleepy
+    float lowerLid;  // pushes up from below -> happy crescent
+    float upperLid;  // droops from above -> sleepy
   };
 
   struct Zed {
@@ -73,7 +78,10 @@ class Face {
   void drawFlourishes(int leftCx, int rightCx, int cy, int eyeTop, int eyeBottom);
   void drawZeds();
 
-  U8G2& u8g2_;
+  Adafruit_GC9A01A& tft_;
+  GFXcanvas16* canvas_ = nullptr;
+  GFXcanvas1* canvas1_ = nullptr;
+
   Emotion emotion_ = Emotion::Neutral;
   Params cur_ = paramsFor(Emotion::Neutral);
   Params target_ = paramsFor(Emotion::Neutral);
@@ -87,6 +95,7 @@ class Face {
   // Gaze offset from center, eased toward gazeTarget.
   float gazeX_ = 0, gazeY_ = 0;
   float gazeTargetX_ = 0, gazeTargetY_ = 0;
+  float neckGazeX_ = 0, neckGazeY_ = 0;
   uint32_t nextSaccadeMs_ = 0;
 
   // Flourish state.

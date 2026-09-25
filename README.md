@@ -100,20 +100,71 @@ patience to read the wiring guide before powering anything on.
 
 ## Build the body
 
-Follow [`docs/wiring.md`](docs/wiring.md) with the parts in hand. The short
-version:
+Follow [`docs/wiring.md`](docs/wiring.md) for full hardware details.
 
-1. Everything shares a ground rail.
-2. Servos and the amplifier run from the XIAO's **5 V** pin, never 3.3 V.
-3. The big capacitor goes across 5 V and ground, striped leg to ground.
-4. The OLED is on I2C (D4/D5), the servos on D3 (pan) and D6 (tilt), the
-   amplifier on D0, D1, D2.
-5. The camera and microphone are on the Sense board already. No wiring.
+### Wiring Diagram (ESP32-S3 SuperMini)
 
-Only the OLED and the XIAO ride on the pan-tilt head. The amplifier,
-speaker, breadboard, and capacitor stay on the desk. There is no printed
-shell yet, so mount the screen on a small plate on the tilt platform with
-standoffs or foam tape, with the camera peeking over the top edge.
+```
+                            +------------------------+
+                            |   ESP32-S3 SuperMini   |
+                            |       [ USB-C ]        |
+                            +---+----------------+---+
+                +5V (USB-C) | 1 | 5V           TX| 1 | ---> INMP441 WS (GPIO 43)
+                     Ground | 2 | GND          RX| 2 | ---> (Leave Free / Serial RX)
+          INMP441 VDD (+3V3)| 3 | 3V3           1| 3 | ---> INMP441 SD (Data Out -> GPIO 1)
+     GC9A01 BLK (Backlight) | 4 | 13            2| 4 | ---> Touch 2 (Cheek / Mute / Sleep)
+     GC9A01 SCL (SPI Clock) | 5 | 12            3| 5 | ---> INMP441 SCK (Clock -> GPIO 3)
+      GC9A01 SDA (SPI MOSI) | 6 | 11            4| 6 | ---> Touch 1 (Head / Pet / Talk)
+          GC9A01 CS (Chip)  | 7 | 10            5| 7 | ---> I2S BCLK  --+--> Amp 1 & 2 BCLK
+         GC9A01 DC (Data)   | 8 | 9             6| 8 | ---> I2S LRC   --+--> Amp 1 & 2 LRC
+        GC9A01 RES (Reset)  | 9 | 8             7| 9 | ---> I2S DIN   --+--> Amp 1 & 2 DIN
+                            +---+----------------+---+
+```
+
+#### Pin Connections
+
+**1. Display: GC9A01 240x240 Round SPI TFT**
+| GC9A01 Pin | ESP32-S3 SuperMini | Notes |
+| --- | --- | --- |
+| VCC | 3V3 (Pin 3) | Or 5V if module includes 3.3V LDO regulator |
+| GND | GND (Pin 2) | Common Ground |
+| SCL (SCLK) | GPIO 12 (Pin 5) | SPI Clock |
+| SDA (MOSI) | GPIO 11 (Pin 6) | SPI Data Out |
+| CS | GPIO 10 (Pin 7) | Chip Select |
+| DC | GPIO 9 (Pin 8) | Data / Command |
+| RES (RST) | GPIO 8 (Pin 9) | Hardware Reset |
+| BLK | GPIO 13 (Pin 4) | Backlight control (or tie to 3.3V) |
+
+**2. Microphone: INMP441 / MS3625 I2S MEMS Microphone**
+| INMP441 Pin | ESP32-S3 SuperMini | Notes |
+| --- | --- | --- |
+| VDD | 3V3 (Pin 3) | 3.3V Power |
+| GND | GND (Pin 2) | Common Ground |
+| SD | GPIO 1 (Pin 3) | Serial Data Out to ESP32 |
+| SCK | GPIO 3 (Pin 5) | I2S Serial Clock |
+| WS | TX / GPIO 43 (Pin 1) | Word Select (Left/Right Clock) |
+| L/R | GND | Ties audio channel to Left |
+
+**3. Audio Output: MAX98357A I2S Class-D Amplifier**
+| MAX98357A Pin | ESP32-S3 SuperMini | Notes |
+| --- | --- | --- |
+| Vin | 5V (Pin 1) | 5V power from USB rail |
+| GND | GND (Pin 2) | Common Ground |
+| BCLK | GPIO 5 (Pin 7) | I2S Bit Clock |
+| LRC | GPIO 6 (Pin 8) | I2S Word Select |
+| DIN | GPIO 7 (Pin 9) | I2S Data In |
+| GAIN | Unconnected / GND | Unconnected = 9dB, GND = 15dB |
+| SD | Unconnected | Default enabled |
+| Speaker +/- | Speaker Terminals | 4 Ω or 8 Ω speaker |
+
+**4. Touch Sensors: TTP223 Capacitive Touch**
+| Sensor Pin | ESP32-S3 SuperMini | Notes |
+| --- | --- | --- |
+| Touch 1 OUT (Head) | GPIO 4 (Pin 6) | Head petting & wake |
+| Touch 2 OUT (Cheek)| GPIO 2 (Pin 4) | Cheek touch (mute/sleep) |
+| VCC / GND | 3V3 / GND | Common power & ground |
+
+*(For the original XIAO ESP32S3 Sense pinout with OLED and pan-tilt servos, refer to [docs/wiring.md](docs/wiring.md).)*
 
 ## Flash the firmware and test over USB
 

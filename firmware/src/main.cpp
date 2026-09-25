@@ -1,11 +1,17 @@
-// desk-robot firmware: an expressive face, a turning head, a speaker, a
-// microphone, and a camera. Driven over USB serial (115200 baud,
-// type `help`) and, when include/secrets.h exists, over WiFi by the brain.
+// desk-robot firmware (ESP32-S3 SuperMini Edition)
+//
+// Hardware:
+//   - MCU: ESP32-S3 SuperMini (Dual-core Xtensa LX7 @ 240MHz, 4MB Flash, USB-C)
+//   - Display: 1.28" Round IPS TFT LCD (240x240 GC9A01 4-wire SPI)
+//   - Audio Output: Dual MAX98357A I2S 3W Class-D Amplifiers (Dual Mono)
+//   - Microphone: MAX9814 Electret Microphone with AGC (ADC1_CH0 / GPIO 1)
+//   - Touch: Dual TTP223 Capacitive Sensors (Head = Pet/Talk, Cheek = Mute/Sleep)
 
 #include <Arduino.h>
-#include <U8g2lib.h>
+#include <SPI.h>
 #include <WiFi.h>
-#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_GC9A01A.h>
 
 #include "camera.h"
 #include "config.h"
@@ -14,25 +20,33 @@
 #include "mic.h"
 #include "servo_neck.h"
 #include "speaker.h"
+#include "touch.h"
 
 #if __has_include("secrets.h")
 #include "secrets.h"
+#define HAVE_BRAIN 1
+#elif __has_include(<secrets.h>)
+#include <secrets.h>
+#define HAVE_BRAIN 1
+#elif __has_include("../include/secrets.h")
+#include "../include/secrets.h"
 #define HAVE_BRAIN 1
 #else
 #define HAVE_BRAIN 0
 #endif
 
-// 1.3" SH1106 128x64 OLED over hardware I2C (SDA=D4/GPIO5, SCL=D5/GPIO6).
-// R2 = rotated 180 degrees: the OLED is mounted upside down on the head.
-U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R2, U8X8_PIN_NONE);
+// Display driver on SPI
+Adafruit_GC9A01A tft(PIN_LCD_CS, PIN_LCD_DC, PIN_LCD_RES);
 
-Face face(u8g2);
+Face face(tft);
 ServoNeck panNeck;
 ServoNeck tiltNeck;
 Link brainLink;
 Speaker speaker;
 Mic mic;
 Camera camera;
+Touch touch;
+
 uint32_t nextTempMs = 0;
 volatile bool speakDonePending = false;  // set by the speaker task, sent from loop()
 
@@ -42,33 +56,30 @@ bool demoMode = true;  // cycles emotions on its own; off while the brain is con
 bool brainConnected = false;
 bool glanceWanted = true;  // the brain's `glance on|off` (off while it holds a pose or tracks a face)
 
-// Idle glances only while Rocky is awake and his brain is connected. Asleep,
-// or with no server running, the head stays still.
 void applyGlances() {
   bool on = brainConnected && !face.asleep() && glanceWanted;
   panNeck.setIdleGlances(on);
   tiltNeck.setIdleGlances(on);
 }
+
 uint32_t nextDemoEmotionMs = 0;
 uint8_t demoEmotionIdx = 0;
 
 void printHelp() {
-  Serial.println(F("desk-robot commands:"));
+  Serial.println(F("desk-robot (ESP32-S3 SuperMini) commands:"));
   Serial.println(F("  emo <name>   neutral|happy|sad|angry|surprised|sleepy|thinking"));
-  Serial.println(F("  pan <deg>    turn head, -60..60 (0 = center)"));
-  Serial.println(F("  tilt <deg>   nod head, -60 (down)..0 (level)"));
+  Serial.println(F("  pan <deg>    turn head (virtual gaze), -60..60 (0 = center)"));
+  Serial.println(F("  tilt <deg>   nod head (virtual gaze), -60 (down)..0 (level)"));
   Serial.println(F("  center       head to center on both axes"));
-  Serial.println(F("  raw pan|tilt <deg>  calibration move that ignores the limits (watch it!)"));
   Serial.println(F("  blink        blink now"));
   Serial.println(F("  sleep on|off eyes shut, breathing, Z's"));
   Serial.println(F("  demo on|off  idle life: auto blinks and emotion changes"));
-  Serial.println(F("  glance on|off  allow idle head glances (only happen while the brain is connected and he is awake)"));
+  Serial.println(F("  glance on|off idle head wander"));
   Serial.println(F("  volume <0-1> speaker volume"));
-  Serial.println(F("  beep         play a test tone through the speaker"));
-  Serial.println(F("  mic on|off   stream the microphone to the brain"));
+  Serial.println(F("  beep         play a test tone through the MAX98357A speakers"));
+  Serial.println(F("  mic on|off   stream the MAX9814 microphone to the brain"));
   Serial.println(F("  miclevel     print mic level for 3 s (talk to it)"));
-  Serial.println(F("  stream on|off [fps]  stream camera JPEGs to the brain"));
-  Serial.println(F("  snap         grab one frame and report its size"));
+  Serial.println(F("  touch <head|cheek> simulate touch sensor press"));
   Serial.println(F("  temp         chip temperature"));
   Serial.println(F("  help         this text"));
 }
@@ -100,14 +111,13 @@ void handleCommand(String line) {
     tiltNeck.setTarget(arg.toFloat());
     Serial.printf("tilt -> %.0f deg\n", tiltNeck.target());
   } else if (cmd == "raw") {
-    // raw pan|tilt <deg>: calibration, ignores the limits. Watch the mechanism!
     int sp = arg.indexOf(' ');
     String axis = sp < 0 ? arg : arg.substring(0, sp);
     float deg = sp < 0 ? 0 : arg.substring(sp + 1).toFloat();
     if (axis == "tilt") tiltNeck.setRaw(deg);
     else if (axis == "pan") panNeck.setRaw(deg);
     else { Serial.println(F("usage: raw pan|tilt <deg>")); return; }
-    Serial.printf("raw %s -> %.0f deg (limits ignored)\n", axis.c_str(), deg);
+    Serial.printf("raw %s -> %.0f deg\n", axis.c_str(), deg);
   } else if (cmd == "center") {
     panNeck.setTarget(0);
     tiltNeck.setTarget(0);
@@ -126,7 +136,7 @@ void handleCommand(String line) {
     speaker.setVolume(arg.toFloat());
     Serial.printf("volume -> %.2f\n", arg.toFloat());
   } else if (cmd == "beep") {
-    // 0.4 s of 440 Hz so the amp can be checked without the brain.
+    // 0.4 s of 440 Hz test tone
     static int16_t tone[16000 * 4 / 10];
     for (size_t i = 0; i < sizeof(tone) / sizeof(tone[0]); ++i) {
       tone[i] = static_cast<int16_t>(8000 * sinf(2 * PI * 440 * i / 16000.0f));
@@ -136,32 +146,51 @@ void handleCommand(String line) {
     speaker.endSpeech();
     Serial.println(F("beep"));
   } else if (cmd == "mic") {
-    mic.setStreaming(arg == "on");
-    Serial.printf("mic %s\n", mic.streaming() ? "on" : "off");
+    if (arg == "on") {
+      mic.setStreaming(true);
+    } else if (arg == "off") {
+      mic.setStreaming(false);
+    } else {
+      mic.setStreaming(!mic.streaming());
+    }
+    Serial.printf("mic streaming: %s (level: %.3f)\n", mic.streaming() ? "ON" : "OFF", mic.level());
   } else if (cmd == "miclevel") {
+    bool wasStreaming = mic.streaming();
+    mic.setStreaming(true);
     for (int i = 0; i < 12; ++i) {
       delay(250);
       int bars = static_cast<int>(mic.level() * 200);
       Serial.printf("  level %.3f %.*s\n", mic.level(), min(bars, 40), "########################################");
     }
-  } else if (cmd == "stream") {
-    int sp = arg.indexOf(' ');
-    String onoff = sp < 0 ? arg : arg.substring(0, sp);
-    float fps = sp < 0 ? 10.0f : arg.substring(sp + 1).toFloat();
-    camera.setStreaming(onoff == "on", fps);
-    Serial.printf("stream %s @ %.1f fps\n", camera.streaming() ? "on" : "off", fps);
-  } else if (cmd == "snap") {
-    if (!camera.ok()) {
-      Serial.println(F("camera not available"));
+    mic.setStreaming(wasStreaming);
+  } else if (cmd == "touch") {
+    if (arg == "head") {
+      if (face.asleep()) {
+        face.setAsleep(false);
+        applyGlances();
+        Serial.println(F("[touch] Head simulated: woke up"));
+      } else {
+        face.setEmotion(Emotion::Happy);
+        face.blink();
+        Serial.println(F("[touch] Head simulated: happy"));
+      }
+    } else if (arg == "cheek") {
+      if (speaker.speaking()) {
+        speaker.endSpeech();
+        Serial.println(F("[touch] Cheek simulated: muted speech"));
+      } else {
+        bool sleeping = !face.asleep();
+        face.setAsleep(sleeping);
+        applyGlances();
+        Serial.printf("[touch] Cheek simulated: sleep %s\n", sleeping ? "on" : "off");
+      }
     } else {
-      bool was = camera.streaming();
-      camera.setStreaming(true, 10);
-      static uint8_t* jpg = static_cast<uint8_t*>(ps_malloc(64 * 1024));
-      size_t n = 0;
-      for (int i = 0; i < 40 && n == 0 && jpg; ++i) { delay(25); n = camera.takeFrame(jpg, 64 * 1024); }
-      camera.setStreaming(was, 10);
-      Serial.printf("snap: %u bytes (%s)\n", n, n ? "ok" : "no frame");
+      Serial.println(F("usage: touch head|cheek"));
     }
+  } else if (cmd == "stream") {
+    Serial.println(F("camera not available on SuperMini build"));
+  } else if (cmd == "snap") {
+    Serial.println(F("camera not available on SuperMini build"));
   } else if (cmd == "temp") {
     Serial.printf("chip %.1f C\n", temperatureRead());
   } else if (cmd == "glance") {
@@ -181,33 +210,97 @@ void setup() {
   Serial.begin(115200);
   randomSeed(esp_random());
 
-  // ESP32Servo wants its LEDC timers claimed up front.
+  // Backlight control for GC9A01 LCD (if connected to GPIO 13)
+  if (PIN_LCD_BLK != 255) {
+    pinMode(PIN_LCD_BLK, OUTPUT);
+    digitalWrite(PIN_LCD_BLK, HIGH);
+  }
+
+  // SPI Hardware bus for GC9A01 display: SCL=12, SDA=11, CS=10
+  SPI.begin(PIN_LCD_SCL, -1, PIN_LCD_SDA, PIN_LCD_CS);
+  face.begin();
+
+  // Virtual neck for easing & gaze (no servos wired)
+#if HAVE_SERVOS
   ESP32PWM::allocateTimer(0);
   ESP32PWM::allocateTimer(1);
   ESP32PWM::allocateTimer(2);
   ESP32PWM::allocateTimer(3);
-
-  face.begin();
   panNeck.begin(PIN_SERVO_PAN, PAN_MIN_DEG, PAN_MAX_DEG, PAN_MAX_SPEED,
-                SERVO_RELAX_MS, PAN_TRIM_DEG, /*glanceRange=*/25.0f);
+                SERVO_RELAX_MS, PAN_TRIM_DEG, 25.0f);
   tiltNeck.begin(PIN_SERVO_TILT, TILT_MIN_DEG, TILT_MAX_DEG, TILT_MAX_SPEED,
-                 SERVO_RELAX_MS, TILT_TRIM_DEG, /*glanceRange=*/10.0f,
-                 TILT_INVERT);
+                 SERVO_RELAX_MS, TILT_TRIM_DEG, 10.0f, TILT_INVERT);
+#else
+  panNeck.begin(255, PAN_MIN_DEG, PAN_MAX_DEG, PAN_MAX_SPEED,
+                SERVO_RELAX_MS, PAN_TRIM_DEG, 25.0f);
+  tiltNeck.begin(255, TILT_MIN_DEG, TILT_MAX_DEG, TILT_MAX_SPEED,
+                 SERVO_RELAX_MS, TILT_TRIM_DEG, 10.0f, TILT_INVERT);
+#endif
 
+  // Dual MAX98357A Amplifiers on I2S0 (BCLK=5, LRC=6, DIN=7)
   speaker.begin(PIN_I2S_BCLK, PIN_I2S_LRC, PIN_I2S_DIN, SPEAKER_VOLUME,
                 []() { speakDonePending = true; });
-  mic.begin(PIN_PDM_CLK, PIN_PDM_DATA, MIC_GAIN);
+
+#if MIC_TYPE_I2S
+  // INMP441 / MS3625 Omnidirectional MEMS Microphone on I2S1
+  mic.beginI2S(PIN_MIC_SCK, PIN_MIC_WS, PIN_MIC_SD, MIC_GAIN);
+#else
+  // MAX9814 Electret Microphone on ADC1 (GPIO 1)
+  mic.beginAnalog(PIN_MIC_ADC, MIC_GAIN);
+#endif
+
+  // TTP223 Capacitive Touch Sensors (Head=GPIO 4, Cheek=GPIO 2)
+#if HAVE_TOUCH
+  touch.begin(PIN_TOUCH_HEAD, PIN_TOUCH_CHEEK);
+  touch.onHeadTouch([]() {
+    if (face.asleep()) {
+      face.setAsleep(false);
+      applyGlances();
+      Serial.println(F("[touch] Head: Rocky woke up!"));
+    } else {
+      face.setEmotion(Emotion::Happy);
+      face.blink();
+      Serial.println(F("[touch] Head: Pet / Happy!"));
+    }
+#if HAVE_BRAIN
+    if (brainLink.connected()) {
+      brainLink.sendJson("{\"type\":\"touch\",\"sensor\":\"head\"}");
+    }
+#endif
+  });
+
+  touch.onCheekTouch([]() {
+    if (speaker.speaking()) {
+      speaker.endSpeech();
+      Serial.println(F("[touch] Cheek: Muted speech"));
+    } else {
+      bool sleeping = !face.asleep();
+      face.setAsleep(sleeping);
+      applyGlances();
+      Serial.printf("[touch] Cheek: Sleep %s\n", sleeping ? "on" : "off");
+    }
+#if HAVE_BRAIN
+    if (brainLink.connected()) {
+      brainLink.sendJson("{\"type\":\"touch\",\"sensor\":\"cheek\"}");
+    }
+#endif
+  });
+#endif
+
+#if HAVE_CAMERA
   if (camera.begin()) Serial.println(F("camera: ready"));
+#endif
 
   demoMode = true;
   face.setIdle(true);
-  applyGlances();  // off: no brain yet
+  applyGlances();
   nextDemoEmotionMs = millis() + 8000;
 
-  Serial.println(F("\ndesk-robot v0.3.0 — hello!"));
+  Serial.println(F("\ndesk-robot (ESP32-S3 SuperMini) — ready!"));
   printHelp();
 
 #if HAVE_BRAIN
+  Serial.printf("\n[link] secrets.h active! Connecting to WiFi \"%s\" (Brain: %s:%d)...\n", WIFI_SSID, BRAIN_HOST, BRAIN_PORT);
   brainLink.onAudio([](const uint8_t* pcm, size_t len) { speaker.feed(pcm, len); });
 #ifndef ROBOT_TOKEN
 #define ROBOT_TOKEN ""
@@ -215,9 +308,6 @@ void setup() {
   brainLink.begin(WIFI_SSID, WIFI_PASS, BRAIN_HOST, BRAIN_PORT, ROBOT_TOKEN,
              [](const String& cmd) { handleCommand(cmd); },
              [](bool connected) {
-               // The brain picks emotions while it's connected; the demo
-               // cycle takes over again if it goes away. Blinks stay on
-               // either way; idle glances only while connected and awake.
                brainConnected = connected;
                demoMode = !connected;
                if (connected) {
@@ -226,12 +316,12 @@ void setup() {
                applyGlances();
              });
 #else
-  Serial.println(F("no include/secrets.h — USB-only mode (see secrets.h.example)"));
+  Serial.println(F("\n[link] WARNING: secrets.h NOT FOUND! Running in USB-only mode (WiFi disabled)."));
 #endif
 }
 
 void loop() {
-  // Serial console.
+  // Serial console
   static String lineBuf;
   while (Serial.available()) {
     char c = static_cast<char>(Serial.read());
@@ -245,6 +335,10 @@ void loop() {
 
   uint32_t now = millis();
 
+#if HAVE_TOUCH
+  touch.update(now);
+#endif
+
 #if HAVE_BRAIN
   brainLink.update(now);
   if (speakDonePending) {
@@ -254,16 +348,26 @@ void loop() {
                   speaker.lastUnderruns(), speaker.lastPrebuffered(),
                   speaker.lastPrebufferMs(), WiFi.RSSI());
   }
+  static uint32_t micFramesSent = 0;
   {
     static uint8_t frame[Mic::FRAME_BYTES];
     while (brainLink.connected() && mic.nextFrame(frame)) {
       brainLink.sendBinary(0x01, frame, sizeof(frame));
+      micFramesSent++;
     }
   }
-  if (brainLink.connected() && camera.streaming()) {
-    static uint8_t* jpg = static_cast<uint8_t*>(ps_malloc(64 * 1024));
-    size_t n = jpg ? camera.takeFrame(jpg, 64 * 1024) : 0;
-    if (n > 0) brainLink.sendBinary(0x02, jpg, n);
+  static uint32_t lastHeartbeatMs = 0;
+  if (now - lastHeartbeatMs >= 4000) {
+    lastHeartbeatMs = now;
+    if (brainLink.connected()) {
+      Serial.printf("[status] WiFi: %d dBm | Mic: %s (lvl: %.3f, sent: %u) | Spk: %s | Heap: %u KB\n",
+                    WiFi.RSSI(),
+                    mic.streaming() ? "STREAMING" : "OFF",
+                    mic.level(),
+                    static_cast<unsigned>(micFramesSent),
+                    speaker.speaking() ? "PLAYING" : "IDLE",
+                    static_cast<unsigned>(ESP.getFreeHeap() / 1024));
+    }
   }
   if (brainLink.connected() && now >= nextTempMs) {
     nextTempMs = now + 10000;
@@ -275,7 +379,7 @@ void loop() {
   }
 #endif
 
-  // Demo mode: wander through emotions so a fresh flash shows everything.
+  // Demo mode: wander through emotions
   if (demoMode && now >= nextDemoEmotionMs) {
     static const Emotion cycle[] = {
         Emotion::Neutral, Emotion::Happy,     Emotion::Thinking,
@@ -286,13 +390,17 @@ void loop() {
     nextDemoEmotionMs = now + random(6000, 12000);
   }
 
+  // Animation and rendering tick (~30 FPS)
   if (now - lastFrameMs >= FRAME_INTERVAL_MS) {
     lastFrameMs = now;
     face.setTalking(speaker.speaking(), speaker.level());
+
+    // Map virtual neck pan/tilt to face gaze on the round screen
+    float gazeX = (panNeck.current() / 60.0f) * 14.0f;
+    float gazeY = (tiltNeck.current() / 60.0f) * 8.0f;
+    face.setNeckGaze(gazeX, gazeY);
+
     face.update(now);
-    // While one axis swings, keep the other powered so it can't sag.
-    if (panNeck.moving()) tiltNeck.hold();
-    if (tiltNeck.moving()) panNeck.hold();
     panNeck.update(now);
     tiltNeck.update(now);
   }

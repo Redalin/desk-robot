@@ -138,7 +138,8 @@ async def handle_robot(websocket: websockets.ServerConnection) -> None:
     pick_mic_source()
     if config.MIC_SOURCE in ("auto", "robot"):
         await send_to_robot({"type": "mic", "on": True})
-    await send_to_robot({"type": "stream", "on": True, "fps": config.CAMERA_FPS})
+    if getattr(config, "HAVE_CAMERA", False):
+        await send_to_robot({"type": "stream", "on": True, "fps": config.CAMERA_FPS})
     # No idle head glances: they fight deliberate looks. The eyes still move.
     await send_to_robot({"type": "glance", "on": False})
     try:

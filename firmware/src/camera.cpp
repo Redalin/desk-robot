@@ -1,21 +1,19 @@
 #include "camera.h"
 
+#if HAVE_CAMERA
 #include <esp_camera.h>
 
-#include "config.h"
-
-// XIAO ESP32S3 Sense camera wiring (from the Arduino core's camera_pins.h).
 static const int PIN_PWDN = -1, PIN_RESET = -1, PIN_XCLK = 10;
 static const int PIN_SIOD = 40, PIN_SIOC = 39;
 static const int PIN_Y9 = 48, PIN_Y8 = 11, PIN_Y7 = 12, PIN_Y6 = 14;
 static const int PIN_Y5 = 16, PIN_Y4 = 18, PIN_Y3 = 17, PIN_Y2 = 15;
 static const int PIN_VSYNC = 38, PIN_HREF = 47, PIN_PCLK = 13;
 
-static const size_t LATEST_CAP = 64 * 1024;  // QVGA JPEGs are ~8-20 KB
+static const size_t LATEST_CAP = 64 * 1024;
 
 bool Camera::begin() {
   camera_config_t cfg = {};
-  cfg.ledc_channel = LEDC_CHANNEL_4;  // 0-3 are taken by the servos
+  cfg.ledc_channel = LEDC_CHANNEL_4;
   cfg.ledc_timer = LEDC_TIMER_2;
   cfg.pin_d0 = PIN_Y2;
   cfg.pin_d1 = PIN_Y3;
@@ -35,8 +33,8 @@ bool Camera::begin() {
   cfg.pin_reset = PIN_RESET;
   cfg.xclk_freq_hz = 20000000;
   cfg.pixel_format = PIXFORMAT_JPEG;
-  cfg.frame_size = FRAMESIZE_QVGA;  // 320x240: plenty for tracking + a live view
-  cfg.jpeg_quality = 12;            // 0-63, lower = better; 12 is ~10-15 KB/frame
+  cfg.frame_size = FRAMESIZE_QVGA;
+  cfg.jpeg_quality = 12;
   cfg.fb_count = 2;
   cfg.fb_location = CAMERA_FB_IN_PSRAM;
   cfg.grab_mode = CAMERA_GRAB_LATEST;
@@ -47,8 +45,8 @@ bool Camera::begin() {
   }
   sensor_t* s = esp_camera_sensor_get();
   if (s != nullptr) {
-    s->set_vflip(s, CAMERA_VFLIP ? 1 : 0);
-    s->set_hmirror(s, CAMERA_HMIRROR ? 1 : 0);
+    s->set_vflip(s, 1);
+    s->set_hmirror(s, 1);
   }
 
   latest_ = static_cast<uint8_t*>(ps_malloc(LATEST_CAP));
@@ -103,3 +101,20 @@ void Camera::task() {
     vTaskDelay(pdMS_TO_TICKS(spent < interval ? interval - spent : 1));
   }
 }
+
+#else
+
+bool Camera::begin() {
+  ok_ = false;
+  return false;
+}
+
+void Camera::setStreaming(bool, float) {
+  streaming_ = false;
+}
+
+size_t Camera::takeFrame(uint8_t*, size_t) {
+  return 0;
+}
+
+#endif

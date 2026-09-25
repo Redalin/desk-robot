@@ -1,14 +1,14 @@
 #pragma once
 
 #include <Arduino.h>
+#include "config.h"
+
+#if HAVE_SERVOS
 #include <ESP32Servo.h>
+#endif
 
 // One head axis (pan or tilt): smooth easing, speed limiting, auto-relax.
-//
-// Angles are in "head degrees": 0 = centered. For pan, negative = robot's
-// left; for tilt, negative = down. The class maps that onto the servo's
-// 0-180 range, with an optional trim offset and direction flip.
-
+// When HAVE_SERVOS is 0, functions as a virtual neck (smooth simulation for gaze & state).
 class ServoNeck {
  public:
   void begin(uint8_t pin, float minDeg, float maxDeg, float maxSpeedDegPerSec,
@@ -16,30 +16,23 @@ class ServoNeck {
              float glanceRangeDeg = 25.0f, bool invert = false);
 
   void setTarget(float deg);
-  // Calibration only: drive straight to a head angle, ignoring the limits.
-  // Use it to find which way the servo turns before trusting the limits.
   void setRaw(float deg);
-  // Keep this axis powered at its current angle. An unpowered servo sags
-  // under the head's weight when the other axis swings; call this while the
-  // other axis is moving.
   void hold();
   bool moving() const { return fabsf(targetDeg_ - currentDeg_) > 0.25f; }
   float current() const { return currentDeg_; }
   float target() const { return targetDeg_; }
 
-  // When idle glances are on, the head occasionally turns a little on its
-  // own — paired with the face saccades it makes the robot feel alive.
   void setIdleGlances(bool on) { idleGlances_ = on; }
-
-  // Call every frame.
   void update(uint32_t nowMs);
 
  private:
   void writeAngle(float deg);
   void attachIfNeeded();
 
+#if HAVE_SERVOS
   Servo servo_;
-  uint8_t pin_ = 0;
+#endif
+  uint8_t pin_ = 255;
   float minDeg_ = -60, maxDeg_ = 60;
   float maxSpeed_ = 180; // deg/sec
   uint32_t relaxAfterMs_ = 1500;

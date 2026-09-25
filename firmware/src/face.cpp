@@ -2,9 +2,18 @@
 
 namespace {
 
-constexpr int SCREEN_W = 128;
-constexpr int SCREEN_H = 64;
-constexpr int EYE_GAP = 16; // space between the two eyes
+constexpr int SCREEN_W = 240;
+constexpr int SCREEN_H = 240;
+constexpr int EYE_GAP = 32; // space between the two eyes
+
+constexpr uint16_t COLOR_BG     = 0x0000; // Deep black
+constexpr uint16_t COLOR_WHITE  = 0xFFFF; // Glint / white
+constexpr uint16_t COLOR_CYAN   = 0x07FF; // Expressive Cyber Cyan
+constexpr uint16_t COLOR_YELLOW = 0xFFE0; // Alert / Sleep Z's
+constexpr uint16_t COLOR_PINK   = 0xFC18; // Blush pink
+constexpr uint16_t COLOR_AQUA   = 0x051F; // Sad tears
+constexpr uint16_t COLOR_ORANGE = 0xFD20; // Steam flame orange
+constexpr uint16_t COLOR_PURPLE = 0xBDF7; // Thinking dots
 
 const char* kEmotionNames[] = {
     "neutral", "happy", "sad", "angry", "surprised", "sleepy", "thinking",
@@ -14,7 +23,25 @@ float approach(float cur, float target, float factor) {
   return cur + (target - cur) * factor;
 }
 
+uint16_t eyeColorFor(Emotion e) {
+  switch (e) {
+    case Emotion::Happy:     return 0x07FF; // Cyan
+    case Emotion::Sad:       return 0x7DDF; // Pale blue
+    case Emotion::Angry:     return 0xF980; // Fiery orange/red
+    case Emotion::Surprised: return 0xFFE0; // Bright yellow
+    case Emotion::Sleepy:    return 0x3CDF; // Soft dim cyan
+    case Emotion::Thinking:  return 0xBDF7; // Gentle violet
+    case Emotion::Neutral:
+    default:                 return 0x07FF; // Electric cyan
+  }
+}
+
 } // namespace
+
+Face::~Face() {
+  if (canvas_) delete canvas_;
+  if (canvas1_) delete canvas1_;
+}
 
 const char* emotionName(Emotion e) {
   return kEmotionNames[static_cast<uint8_t>(e)];
@@ -31,22 +58,31 @@ bool emotionFromName(const char* name, Emotion& out) {
 }
 
 Face::Params Face::paramsFor(Emotion e) {
-  //                     eyeW  eyeH  radius browSlant lowerLid upperLid
+  //                     eyeW  eyeH  radius browSlant lowerLid upperLid (scaled for 240x240)
   switch (e) {
-    case Emotion::Happy:     return {36, 36, 12,  0, 16,  0};
-    case Emotion::Sad:       return {32, 26, 10, -9,  0,  4};
-    case Emotion::Angry:     return {34, 24,  8, 10,  0,  0};
-    case Emotion::Surprised: return {38, 44, 19,  0,  0,  0};
-    case Emotion::Sleepy:    return {34, 26, 10,  0,  0, 14};
-    case Emotion::Thinking:  return {30, 30, 11,  0,  0,  5};
+    case Emotion::Happy:     return {66, 66, 22,   0, 30,  0};
+    case Emotion::Sad:       return {60, 50, 18, -16,  0,  8};
+    case Emotion::Angry:     return {64, 46, 16,  18,  0,  0};
+    case Emotion::Surprised: return {70, 80, 34,   0,  0,  0};
+    case Emotion::Sleepy:    return {64, 50, 18,   0,  0, 26};
+    case Emotion::Thinking:  return {58, 58, 20,   0,  0, 10};
     case Emotion::Neutral:
-    default:                 return {34, 34, 12,  0,  0,  0};
+    default:                 return {64, 64, 22,   0,  0,  0};
   }
 }
 
 void Face::begin() {
-  u8g2_.begin();
-  u8g2_.setBusClock(400000);
+  tft_.begin(40000000);
+  tft_.setRotation(0);
+  tft_.fillScreen(COLOR_BG);
+
+  // Allocate double-buffered canvas in SRAM
+  canvas_ = new GFXcanvas16(SCREEN_W, SCREEN_H);
+  if (!canvas_) {
+    Serial.println(F("[Face] 16-bit canvas failed, falling back to 1-bit"));
+    canvas1_ = new GFXcanvas1(SCREEN_W, SCREEN_H);
+  }
+
   // Wake-up: start with eyes shut, then open.
   blinkAmount_ = 1.0f;
   blinkClosing_ = false;
@@ -67,8 +103,8 @@ void Face::setEmotion(Emotion e) {
   target_ = paramsFor(e);
   // Thinking looks up and to the side; other emotions release the gaze.
   if (e == Emotion::Thinking) {
-    gazeTargetX_ = 7;
-    gazeTargetY_ = -5;
+    gazeTargetX_ = 14;
+    gazeTargetY_ = -10;
   } else {
     gazeTargetX_ = 0;
     gazeTargetY_ = 0;
@@ -100,7 +136,7 @@ void Face::stepAnimation(uint32_t nowMs) {
   frame_++;
 
   // Morph eye shape toward the current emotion preset (or shut, if asleep).
-  Params goal = asleep_ ? Params{30, 3, 1, 0, 0, 0} : target_;
+  Params goal = asleep_ ? Params{56, 6, 2, 0, 0, 0} : target_;
   float f = asleep_ ? 0.12f : 0.25f;  // eyes close slowly, change fast
   cur_.eyeW = approach(cur_.eyeW, goal.eyeW, f);
   cur_.eyeH = approach(cur_.eyeH, goal.eyeH, f);
@@ -113,7 +149,6 @@ void Face::stepAnimation(uint32_t nowMs) {
   squint_ *= 0.85f;
 
   if (asleep_) {
-    // Slow breathing; the odd dream twitch; Z's drifting up.
     breath_ += 0.035f;
     blinkAmount_ = 0.0f;
     blinkClosing_ = false;
@@ -127,8 +162,8 @@ void Face::stepAnimation(uint32_t nowMs) {
         if (!z.alive) {
           z.alive = true;
           z.age = 0;
-          z.x = SCREEN_W / 2 + EYE_GAP / 2 + cur_.eyeW + 2;
-          z.y = SCREEN_H / 2 - 6;
+          z.x = SCREEN_W / 2 + EYE_GAP / 2 + cur_.eyeW + 4;
+          z.y = SCREEN_H / 2 - 12;
           break;
         }
       }
@@ -137,9 +172,9 @@ void Face::stepAnimation(uint32_t nowMs) {
     for (Zed& z : zeds_) {
       if (!z.alive) continue;
       z.age += 0.012f;
-      z.y -= 0.32f;
-      z.x += 0.22f;
-      if (z.age >= 1.0f || z.y < -12) z.alive = false;
+      z.y -= 0.6f;
+      z.x += 0.4f;
+      if (z.age >= 1.0f || z.y < 20 || z.x > SCREEN_W - 20) z.alive = false;
     }
     gazeX_ = approach(gazeX_, 0, 0.2f);
     gazeY_ = approach(gazeY_, 0, 0.2f);
@@ -147,7 +182,7 @@ void Face::stepAnimation(uint32_t nowMs) {
     return;
   }
 
-  // Blink: snap shut fast, reopen a little slower — reads as natural.
+  // Blink animation
   if (blinkClosing_) {
     blinkAmount_ += 0.45f;
     if (blinkAmount_ >= 1.0f) {
@@ -162,13 +197,11 @@ void Face::stepAnimation(uint32_t nowMs) {
     if (nowMs >= nextBlinkMs_) {
       blinkClosing_ = true;
       nextBlinkMs_ = nowMs + random(2200, 6000);
-      // Occasional double blink.
-      if (random(100) < 20) nextBlinkMs_ = nowMs + 400;
+      if (random(100) < 20) nextBlinkMs_ = nowMs + 400; // Double blink
     }
     if (nowMs >= nextSaccadeMs_ && emotion_ != Emotion::Thinking) {
-      gazeTargetX_ = static_cast<float>(random(-8, 9));
-      gazeTargetY_ = static_cast<float>(random(-4, 5));
-      // Mostly return to center so the robot doesn't look shifty.
+      gazeTargetX_ = static_cast<float>(random(-14, 15));
+      gazeTargetY_ = static_cast<float>(random(-8, 9));
       if (random(100) < 40) gazeTargetX_ = gazeTargetY_ = 0;
       nextSaccadeMs_ = nowMs + random(1200, 4000);
     }
@@ -178,12 +211,12 @@ void Face::stepAnimation(uint32_t nowMs) {
     }
   }
 
-  // Per-emotion flourishes.
+  // Per-emotion flourishes
   if (emotion_ == Emotion::Sad) {
     if (tearY_ < 0 && nowMs >= nextTearMs_) tearY_ = 0;
     if (tearY_ >= 0) {
-      tearY_ += 0.7f;
-      if (tearY_ > SCREEN_H) {
+      tearY_ += 1.4f;
+      if (tearY_ > 60) {
         tearY_ = -1;
         nextTearMs_ = nowMs + random(2500, 5000);
       }
@@ -193,9 +226,9 @@ void Face::stepAnimation(uint32_t nowMs) {
     thinkDots_ = (thinkDots_ + 1) % 4;
     nextDotMs_ = nowMs + 420;
   }
-  jitterX_ = (emotion_ == Emotion::Angry && (frame_ % 3 == 0)) ? random(-1, 2) : 0;
+  jitterX_ = (emotion_ == Emotion::Angry && (frame_ % 3 == 0)) ? random(-2, 3) : 0;
 
-  // Mouth follows the speaker's loudness while talking, closes otherwise.
+  // Mouth movement with speaker loudness
   float mouthGoal = talking_ ? constrain(0.15f + mouthLevel_ * 4.0f, 0.15f, 1.0f) : 0.0f;
   mouth_ = approach(mouth_, mouthGoal, talking_ ? 0.5f : 0.3f);
 
@@ -204,9 +237,12 @@ void Face::stepAnimation(uint32_t nowMs) {
 }
 
 void Face::drawEye(int cx, int cy, bool isLeft, float hScale) {
-  // Eye height collapses as the blink progresses.
+  if (!canvas_ && !canvas1_) return;
+  Adafruit_GFX* g = canvas_ ? static_cast<Adafruit_GFX*>(canvas_) : static_cast<Adafruit_GFX*>(canvas1_);
+  uint16_t eyeColor = canvas_ ? eyeColorFor(emotion_) : 1;
+
   float h = cur_.eyeH * hScale * (1.0f - blinkAmount_);
-  if (h < 2) h = 2;
+  if (h < 4) h = 4;
   float w = cur_.eyeW;
 
   int x = cx - static_cast<int>(w / 2);
@@ -214,108 +250,110 @@ void Face::drawEye(int cx, int cy, bool isLeft, float hScale) {
   int r = min(static_cast<int>(cur_.radius), static_cast<int>(min(w, h) / 2 - 1));
   if (r < 0) r = 0;
 
-  u8g2_.setDrawColor(1);
-  u8g2_.drawRBox(x, y, static_cast<int>(w), static_cast<int>(h), r);
+  // Main eye body
+  g->fillRoundRect(x, y, static_cast<int>(w), static_cast<int>(h), r, eyeColor);
 
-  // Overlays are drawn in black to carve the eye shape.
-  u8g2_.setDrawColor(0);
-
-  // Brow: a triangle clipped off the top edge. Slant > 0 cuts the inner
-  // corner (angry); slant < 0 cuts the outer corner (sad).
+  // Brow slant cut
   float slant = cur_.browSlant;
   if (fabsf(slant) > 0.5f) {
-    int depth = static_cast<int>(fabsf(slant));
+    int depth = static_cast<int>(fabsf(slant) * 1.8f);
     bool cutInner = (slant > 0);
-    // "Inner" is the right edge of the left eye, left edge of the right eye.
     bool cutRightCorner = isLeft ? cutInner : !cutInner;
-    int x0 = x - 1, x1 = x + static_cast<int>(w) + 1;
+    int x0 = x - 2, x1 = x + static_cast<int>(w) + 2;
     if (cutRightCorner) {
-      u8g2_.drawTriangle(x0, y - 1, x1, y - 1, x1, y + depth);
+      g->fillTriangle(x0, y - 2, x1, y - 2, x1, y + depth, COLOR_BG);
     } else {
-      u8g2_.drawTriangle(x0, y - 1, x1, y - 1, x0, y + depth);
+      g->fillTriangle(x0, y - 2, x1, y - 2, x0, y + depth, COLOR_BG);
     }
   }
 
-  // Lower lid: a disc pushed up from below turns the eye into a happy crescent.
+  // Lower lid cut (happy crescent)
   if (cur_.lowerLid > 0.5f) {
-    int lidR = static_cast<int>(w);
-    int lidY = y + static_cast<int>(h) + lidR - static_cast<int>(cur_.lowerLid);
-    u8g2_.drawDisc(cx, lidY, lidR);
+    int lidR = static_cast<int>(w * 1.05f);
+    int lidY = y + static_cast<int>(h) + lidR - static_cast<int>(cur_.lowerLid * 1.8f);
+    g->fillCircle(cx, lidY, lidR, COLOR_BG);
   }
 
-  // Upper lid: a flat droop from above for sleepy/thinking.
+  // Upper lid droop (sleepy/thinking)
   if (cur_.upperLid > 0.5f) {
-    u8g2_.drawBox(x - 1, y - 1, static_cast<int>(w) + 2,
-                  static_cast<int>(cur_.upperLid) + 1);
+    g->fillRect(x - 2, y - 2, static_cast<int>(w) + 4,
+                static_cast<int>(cur_.upperLid * 1.8f) + 2, COLOR_BG);
   }
 
-  // Glint: a small dark square high in the eye, offset by the gaze so it
-  // reads as a reflection. Skipped when the eye is nearly shut.
-  if (h > 12 && !asleep_) {
-    int gx = x + static_cast<int>(w * 0.22f) + static_cast<int>(gazeX_ * 0.3f);
-    int gy = y + static_cast<int>(h * 0.18f) + static_cast<int>(cur_.upperLid);
-    int gs = (w > 34) ? 4 : 3;
-    u8g2_.drawBox(gx, gy, gs, gs);
+  // Glint: crisp white reflection highlight offset with gaze
+  if (h > 24 && !asleep_) {
+    int gx = x + static_cast<int>(w * 0.22f) + static_cast<int>((gazeX_ + neckGazeX_) * 0.3f);
+    int gy = y + static_cast<int>(h * 0.18f) + static_cast<int>(cur_.upperLid * 1.2f);
+    int gs = (w > 60) ? 7 : 5;
+    g->fillRect(gx, gy, gs, gs, canvas_ ? COLOR_WHITE : 0);
   }
-
-  u8g2_.setDrawColor(1);
 }
 
 void Face::drawMouth(int cx, int cy) {
   if (mouth_ < 0.05f) return;
-  int mh = 2 + static_cast<int>(mouth_ * 9);
-  int mw = 20 + static_cast<int>(mouth_ * 8);
-  int my = cy + static_cast<int>(cur_.eyeH / 2) + 4;
-  if (my + mh > SCREEN_H - 1) my = SCREEN_H - 1 - mh;
-  u8g2_.setDrawColor(1);
-  u8g2_.drawRBox(cx - mw / 2, my, mw, mh, min(mh / 2, 4));
-  if (mh > 6) {  // a darker inside when it's wide open
-    u8g2_.setDrawColor(0);
-    u8g2_.drawRBox(cx - mw / 2 + 3, my + 2, mw - 6, mh - 4, 2);
-    u8g2_.setDrawColor(1);
+  Adafruit_GFX* g = canvas_ ? static_cast<Adafruit_GFX*>(canvas_) : static_cast<Adafruit_GFX*>(canvas1_);
+  uint16_t mouthColor = canvas_ ? eyeColorFor(emotion_) : 1;
+
+  int mh = 4 + static_cast<int>(mouth_ * 18);
+  int mw = 36 + static_cast<int>(mouth_ * 20);
+  int my = cy + static_cast<int>(cur_.eyeH / 2) + 12;
+  if (my + mh > SCREEN_H - 15) my = SCREEN_H - 15 - mh;
+
+  g->fillRoundRect(cx - mw / 2, my, mw, mh, min(mh / 2, 8), mouthColor);
+  if (mh > 10) {
+    g->fillRoundRect(cx - mw / 2 + 4, my + 3, mw - 8, mh - 6, 3, COLOR_BG);
   }
 }
 
 void Face::drawFlourishes(int leftCx, int rightCx, int cy, int eyeTop, int eyeBottom) {
-  u8g2_.setDrawColor(1);
+  Adafruit_GFX* g = canvas_ ? static_cast<Adafruit_GFX*>(canvas_) : static_cast<Adafruit_GFX*>(canvas1_);
   int half = static_cast<int>(cur_.eyeW / 2);
   uint32_t since = millis() - emotionSinceMs_;
 
   switch (emotion_) {
     case Emotion::Surprised:
       if (since < 900) {
-        u8g2_.setFont(u8g2_font_10x20_tr);
-        u8g2_.drawStr(SCREEN_W - 14, 20, "!");
+        g->setTextSize(3);
+        g->setTextColor(canvas_ ? COLOR_YELLOW : 1);
+        g->setCursor(185, 45);
+        g->print("!");
       }
       break;
     case Emotion::Happy:
       if (cur_.lowerLid > 8) {
-        // Blush: two short slashes below the outer corner of each eye.
+        // Blush: two short slashes below the outer corner of each eye
+        uint16_t blushCol = canvas_ ? COLOR_PINK : 1;
         for (int i = 0; i < 2; ++i) {
-          int lx = leftCx - half - 8 + i * 3, rx = rightCx + half + 3 + i * 3;
-          u8g2_.drawLine(lx, eyeBottom + 1, lx + 3, eyeBottom - 3);
-          u8g2_.drawLine(rx, eyeBottom + 1, rx + 3, eyeBottom - 3);
+          int lx = leftCx - half - 14 + i * 6;
+          int rx = rightCx + half + 6 + i * 6;
+          g->drawLine(lx, eyeBottom + 4, lx + 6, eyeBottom - 4, blushCol);
+          g->drawLine(lx + 1, eyeBottom + 4, lx + 7, eyeBottom - 4, blushCol);
+          g->drawLine(rx, eyeBottom + 4, rx + 6, eyeBottom - 4, blushCol);
+          g->drawLine(rx + 1, eyeBottom + 4, rx + 7, eyeBottom - 4, blushCol);
         }
       }
       break;
     case Emotion::Sad:
       if (tearY_ >= 0) {
-        int tx = rightCx + half - 3;
+        int tx = rightCx + half - 4;
         int ty = eyeBottom + static_cast<int>(tearY_);
-        u8g2_.drawDisc(tx, ty, 2);
-        u8g2_.drawLine(tx, ty - 5, tx, ty - 2);
+        uint16_t tearCol = canvas_ ? COLOR_AQUA : 1;
+        g->fillCircle(tx, ty, 4, tearCol);
+        g->fillTriangle(tx - 4, ty, tx + 4, ty, tx, ty - 8, tearCol);
       }
       break;
     case Emotion::Thinking:
       for (int i = 0; i < thinkDots_; ++i) {
-        u8g2_.drawDisc(SCREEN_W - 26 + i * 8, 9, 2);
+        g->fillCircle(160 + i * 14, 45, 4, canvas_ ? COLOR_PURPLE : 1);
       }
       break;
     case Emotion::Angry:
-      // Two short "steam" strokes above the outer corners.
       if ((frame_ / 6) % 2 == 0) {
-        u8g2_.drawLine(leftCx - half - 4, eyeTop - 4, leftCx - half - 2, eyeTop - 9);
-        u8g2_.drawLine(rightCx + half + 4, eyeTop - 4, rightCx + half + 2, eyeTop - 9);
+        uint16_t steamCol = canvas_ ? COLOR_ORANGE : 1;
+        g->drawLine(leftCx - half - 8, eyeTop - 6, leftCx - half - 4, eyeTop - 16, steamCol);
+        g->drawLine(leftCx - half - 7, eyeTop - 6, leftCx - half - 3, eyeTop - 16, steamCol);
+        g->drawLine(rightCx + half + 8, eyeTop - 6, rightCx + half + 4, eyeTop - 16, steamCol);
+        g->drawLine(rightCx + half + 7, eyeTop - 6, rightCx + half + 3, eyeTop - 16, steamCol);
       }
       break;
     default:
@@ -324,46 +362,65 @@ void Face::drawFlourishes(int leftCx, int rightCx, int cy, int eyeTop, int eyeBo
 }
 
 void Face::drawZeds() {
-  u8g2_.setDrawColor(1);
+  Adafruit_GFX* g = canvas_ ? static_cast<Adafruit_GFX*>(canvas_) : static_cast<Adafruit_GFX*>(canvas1_);
+  g->setTextColor(canvas_ ? COLOR_YELLOW : 1);
+
   for (const Zed& z : zeds_) {
     if (!z.alive) continue;
-    if (z.age > 0.8f && (frame_ % 2 == 0)) continue;  // flicker out at the end
-    if (z.age < 0.33f) u8g2_.setFont(u8g2_font_6x10_tr);
-    else if (z.age < 0.66f) u8g2_.setFont(u8g2_font_9x15B_tr);
-    else u8g2_.setFont(u8g2_font_10x20_tr);
-    int x = static_cast<int>(z.x), y = static_cast<int>(z.y);
-    if (x >= 0 && x < SCREEN_W - 4 && y > 4) u8g2_.drawStr(x, y, "Z");
+    if (z.age > 0.8f && (frame_ % 2 == 0)) continue; // flicker out at end
+
+    if (z.age < 0.33f) g->setTextSize(1);
+    else if (z.age < 0.66f) g->setTextSize(2);
+    else g->setTextSize(3);
+
+    int x = static_cast<int>(z.x);
+    int y = static_cast<int>(z.y);
+    if (x >= 20 && x < SCREEN_W - 25 && y > 20) {
+      g->setCursor(x, y);
+      g->print("Z");
+    }
   }
 }
 
 void Face::render() {
-  u8g2_.clearBuffer();
+  if (!canvas_ && !canvas1_) return;
+  Adafruit_GFX* g = canvas_ ? static_cast<Adafruit_GFX*>(canvas_) : static_cast<Adafruit_GFX*>(canvas1_);
+  g->fillScreen(COLOR_BG);
 
-  // Vertical bob: breathing while asleep, a bounce with the mouth while talking.
-  float bob = asleep_ ? sinf(breath_) * 2.0f : -mouth_ * 2.0f;
-  int cy = SCREEN_H / 2 + static_cast<int>(gazeY_ + bob);
-  if (talking_) cy -= 2;  // make room for the mouth
+  // Vertical bob: breathing while asleep, bounce while talking
+  float bob = asleep_ ? sinf(breath_) * 3.0f : -mouth_ * 3.0f;
+  int cy = SCREEN_H / 2 - 6 + static_cast<int>(gazeY_ + neckGazeY_ + bob);
+  if (talking_) cy -= 4;
+
   int half = static_cast<int>(cur_.eyeW / 2);
-  int leftCx = SCREEN_W / 2 - EYE_GAP / 2 - half + static_cast<int>(gazeX_) + jitterX_;
-  int rightCx = SCREEN_W / 2 + EYE_GAP / 2 + half + static_cast<int>(gazeX_) + jitterX_;
+  int totalGazeX = static_cast<int>(gazeX_ + neckGazeX_) + jitterX_;
+  int leftCx = SCREEN_W / 2 - EYE_GAP / 2 - half + totalGazeX;
+  int rightCx = SCREEN_W / 2 + EYE_GAP / 2 + half + totalGazeX;
 
-  // Height scale: emotion-change overshoot, idle squint, dream twitch.
+  // Height scale: emotion overshoot, idle squint, dream twitch
   float hScale = 1.0f + pop_ * (emotion_ == Emotion::Surprised ? 0.3f : 0.12f);
   hScale *= 1.0f - squint_ * 0.4f;
-  if (asleep_) hScale += twitch_ * 2.5f;  // eyelids flutter open a crack
+  if (asleep_) hScale += twitch_ * 2.5f;
 
   drawEye(leftCx, cy, true, hScale);
   drawEye(rightCx, cy, false, hScale);
 
   int eyeTop = cy - static_cast<int>(cur_.eyeH * hScale / 2);
   int eyeBottom = cy + static_cast<int>(cur_.eyeH * hScale / 2);
+
   if (asleep_) {
     drawZeds();
   } else {
     drawFlourishes(leftCx, rightCx, cy, eyeTop, eyeBottom);
-    drawMouth(SCREEN_W / 2 + static_cast<int>(gazeX_ * 0.5f), cy);
+    drawMouth(SCREEN_W / 2 + static_cast<int>((gazeX_ + neckGazeX_) * 0.5f), cy);
   }
-  u8g2_.sendBuffer();
+
+  // Push frame buffer to GC9A01 display
+  if (canvas_) {
+    tft_.drawRGBBitmap(0, 0, canvas_->getBuffer(), SCREEN_W, SCREEN_H);
+  } else if (canvas1_) {
+    tft_.drawBitmap(0, 0, canvas1_->getBuffer(), SCREEN_W, SCREEN_H, eyeColorFor(emotion_), COLOR_BG);
+  }
 }
 
 void Face::update(uint32_t nowMs) {

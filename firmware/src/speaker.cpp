@@ -2,10 +2,9 @@
 
 #include <driver/i2s.h>
 
-// I2S1: the PDM mic needs I2S0 (the only port with PDM receive on the S3).
-static const i2s_port_t I2S_PORT = I2S_NUM_1;
+static const i2s_port_t I2S_PORT = I2S_NUM_0;
 static const int SAMPLE_RATE = 16000;
-static const size_t RING_BYTES = 1024 * 1024;  // 32 s of audio, in PSRAM
+static const size_t RING_BYTES = 1024 * 1024;  // 32 s of audio (when PSRAM available)
 static const size_t MIN_PREBUFFER = 6400;      // 200 ms, if the size is unknown
 static const size_t MAX_PREBUFFER = 32000;     // 1 s: never wait longer than this
 static const size_t CHUNK_SAMPLES = 256;
@@ -17,7 +16,7 @@ void Speaker::begin(uint8_t bclkPin, uint8_t lrcPin, uint8_t dinPin,
 
   ring_ = static_cast<uint8_t*>(ps_malloc(RING_BYTES));
   if (ring_ == nullptr) {
-    // No PSRAM? Fall back to a small internal buffer (~2 s).
+    // No PSRAM on SuperMini: fall back to internal SRAM ring buffer (~2 s).
     ringSize_ = 64 * 1024;
     ring_ = static_cast<uint8_t*>(malloc(ringSize_));
   } else {
@@ -28,8 +27,8 @@ void Speaker::begin(uint8_t bclkPin, uint8_t lrcPin, uint8_t dinPin,
   cfg.mode = static_cast<i2s_mode_t>(I2S_MODE_MASTER | I2S_MODE_TX);
   cfg.sample_rate = SAMPLE_RATE;
   cfg.bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT;
-  // Send the same sample on both channels; the MAX98357A with SD floating
-  // plays (L+R)/2, so this comes out at full level.
+  // Send the same sample on both channels (dual mono / stereo).
+  // Both MAX98357A amps receive identical data.
   cfg.channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT;
   cfg.communication_format = I2S_COMM_FORMAT_STAND_I2S;
   cfg.intr_alloc_flags = ESP_INTR_FLAG_LEVEL1;
@@ -47,15 +46,15 @@ void Speaker::begin(uint8_t bclkPin, uint8_t lrcPin, uint8_t dinPin,
   pins.data_in_num = I2S_PIN_NO_CHANGE;
   i2s_set_pin(I2S_PORT, &pins);
   i2s_zero_dma_buffer(I2S_PORT);
-  // Idle with the clocks stopped: the MAX98357A goes to standby and ignores
-  // noise coupled onto its data line (camera/WiFi bursts were audible as
-  // random clicks). Clocks restart when a reply begins.
+
+  // Idle with the clocks stopped to put MAX98357A in standby (eliminates idle hiss)
   i2s_stop(I2S_PORT);
 
   xTaskCreatePinnedToCore(taskEntry, "speaker", 4096, this, 3, nullptr, 0);
 }
 
 void Speaker::beginSpeech(size_t expectedBytes) {
+  Serial.printf("[speaker] beginSpeech (expected %u bytes)\n", static_cast<unsigned>(expectedBytes));
   i2s_zero_dma_buffer(I2S_PORT);
   i2s_start(I2S_PORT);  // amp wakes while we pre-buffer
   portENTER_CRITICAL(&lock_);
@@ -70,7 +69,10 @@ void Speaker::beginSpeech(size_t expectedBytes) {
 }
 
 void Speaker::feed(const uint8_t* pcm, size_t len) {
-  if (!speaking_ || ring_ == nullptr) return;
+  if (ring_ == nullptr || len == 0) return;
+  if (!speaking_) {
+    beginSpeech(0);
+  }
   portENTER_CRITICAL(&lock_);
   size_t used = (head_ + ringSize_ - tail_) % ringSize_;
   size_t space = ringSize_ - 1 - used;
@@ -82,7 +84,10 @@ void Speaker::feed(const uint8_t* pcm, size_t len) {
   portEXIT_CRITICAL(&lock_);
 }
 
-void Speaker::endSpeech() { ended_ = true; }
+void Speaker::endSpeech() {
+  Serial.printf("[speaker] endSpeech called (avail: %u bytes)\n", static_cast<unsigned>(available()));
+  ended_ = true;
+}
 
 size_t Speaker::available() const {
   return (head_ + ringSize_ - tail_) % ringSize_;
@@ -105,42 +110,53 @@ void Speaker::task() {
   static uint8_t mono[CHUNK_SAMPLES * 2];
   static int16_t stereo[CHUNK_SAMPLES * 2];
   bool started = false;
+  uint32_t drySinceMs = 0;
 
   for (;;) {
     if (!speaking_) {
       started = false;
+      drySinceMs = 0;
       vTaskDelay(pdMS_TO_TICKS(10));
       continue;
     }
     size_t avail = available();
     if (!started) {
       // Buffer the whole line if it's short, else up to 1 s, before playing.
-      // The brain sends the entire reply at once, so this costs little
-      // latency and rides out WiFi hiccups.
       size_t want = expectedBytes_ ? min(expectedBytes_, MAX_PREBUFFER) : MIN_PREBUFFER;
       if (avail < want && !ended_) {
         vTaskDelay(pdMS_TO_TICKS(5));
         continue;
       }
       started = true;
+      drySinceMs = 0;
       prebuffered_ = avail;
       prebufferMs_ = millis() - speechStartMs_;
+      Serial.printf("[speaker] playback started: %u bytes buffered in %u ms\n", static_cast<unsigned>(prebuffered_), static_cast<unsigned>(prebufferMs_));
     }
     if (avail == 0) {
-      if (ended_) {
+      if (drySinceMs == 0) {
+        drySinceMs = millis();
+      }
+      // If ended or dry for > 1500 ms after starting, finish speech
+      if (ended_ || (started && millis() - drySinceMs > 1500)) {
+        if (!ended_) {
+          Serial.println(F("[speaker] silence timeout (no speak_end) -> ending playback"));
+        }
         // Done: let the DMA drain, then stop the clocks so the amp sleeps.
         vTaskDelay(pdMS_TO_TICKS(80));
         i2s_zero_dma_buffer(I2S_PORT);
         i2s_stop(I2S_PORT);
         speaking_ = false;
         level_ = 0;
+        Serial.printf("[speaker] playback finished (underruns: %u)\n", static_cast<unsigned>(underruns_));
         if (onDone_) onDone_();
       } else {
-        underruns_ = underruns_ + 1;  // ran dry mid-line: audible gap
+        underruns_ = underruns_ + 1;  // ran dry mid-line
         vTaskDelay(pdMS_TO_TICKS(5));
       }
       continue;
     }
+    drySinceMs = 0;
 
     size_t n = readInto(mono, sizeof(mono)) / 2;  // samples
     const int16_t* in = reinterpret_cast<const int16_t*>(mono);

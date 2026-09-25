@@ -2,18 +2,23 @@
 
 #include <Arduino.h>
 
-// Mic: the Sense board's PDM microphone → 16 kHz mono s16le frames.
+// Mic: MAX9814 Electret Microphone with AGC -> ADC1 16 kHz mono s16le frames.
 //
-// A capture task reads the I2S peripheral in 30 ms chunks and drops each one
-// into a queue; loop() drains the queue and ships frames to the brain
-// (the WebSocket client isn't safe to call from another task).
+// A FreeRTOS capture task samples ADC1_CH0 (GPIO 1) at 16 kHz in 30 ms chunks
+// (480 samples = 960 bytes) and drops each frame into a queue; loop() drains
+// the queue and ships frames to the brain.
 
 class Mic {
  public:
   static const size_t FRAME_SAMPLES = 480;  // 30 ms at 16 kHz
   static const size_t FRAME_BYTES = FRAME_SAMPLES * 2;
 
-  void begin(uint8_t clkPin, uint8_t dataPin, float gain);
+  // I2S Digital MEMS Mic (INMP441 / MS3625)
+  void beginI2S(uint8_t sckPin, uint8_t wsPin, uint8_t sdPin, float gain = 1.0f);
+
+  // Analog Electret Mic (MAX9814)
+  void beginAnalog(uint8_t adcPin, float gain = 1.0f);
+
   void setStreaming(bool on) { streaming_ = on; }
   bool streaming() const { return streaming_; }
 
@@ -27,6 +32,8 @@ class Mic {
   static void taskEntry(void* self);
   void task();
 
+  bool isI2S_ = true;
+  uint8_t pin_ = 1;
   QueueHandle_t queue_ = nullptr;
   volatile bool streaming_ = false;
   volatile float level_ = 0.0f;
