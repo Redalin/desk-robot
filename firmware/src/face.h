@@ -1,10 +1,15 @@
 #pragma once
 
 #include <Arduino.h>
+#include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_GC9A01A.h>
+#include <Adafruit_SH110X.h>
+#include "config.h"
 
-// Expressive two-eye face for a 240x240 Round IPS TFT LCD (GC9A01).
+// Expressive two-eye face:
+// - 1.3" Monochrome I2C OLED (SH1106 128x64) when USE_SH1106_OLED = 1
+// - 1.28" Round IPS TFT LCD (GC9A01 240x240) when USE_SH1106_OLED = 0
 //
 // Eyes are rounded rectangles whose shape morphs smoothly between emotion
 // presets. Layered on top: blinks, gaze shifts, a glint in each eye, a mouth
@@ -28,7 +33,8 @@ bool emotionFromName(const char* name, Emotion& out);
 
 class Face {
  public:
-  explicit Face(Adafruit_GC9A01A& display) : tft_(display) {}
+  explicit Face(Adafruit_GC9A01A& display) : tft_(&display), oled_(nullptr) {}
+  explicit Face(Adafruit_SH1106G& display) : tft_(nullptr), oled_(&display) {}
   ~Face();
 
   void begin();
@@ -77,8 +83,10 @@ class Face {
   void drawMouth(int cx, int cy);
   void drawFlourishes(int leftCx, int rightCx, int cy, int eyeTop, int eyeBottom);
   void drawZeds();
+  Adafruit_GFX* getGFX();
 
-  Adafruit_GC9A01A& tft_;
+  Adafruit_GC9A01A* tft_ = nullptr;
+  Adafruit_SH1106G* oled_ = nullptr;
   GFXcanvas16* canvas_ = nullptr;
   GFXcanvas1* canvas1_ = nullptr;
 

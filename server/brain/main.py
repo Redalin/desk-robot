@@ -478,18 +478,49 @@ class SpokenReply:
         buf = bytearray()
         total = 0
         chunk: bytes | None = first
+
+        # Pacing: the robot plays at 16 kHz mono s16le (32,000 bytes/sec).
+        # On devices without PSRAM (like the SuperMini), the ring buffer is ~64-96 KB (~2-3 s).
+        # We prime with ~0.6 s of audio, then pace frames so lead time never exceeds ~0.6 s.
+        bytes_per_sec = 32000
+        target_lead_sec = 0.6
+        playback_start = time.monotonic()
+
         while chunk is not None:
             buf += chunk
             while len(buf) >= FRAME_BYTES:
                 if robot_socket is None:
                     return
+
+                audio_sent_sec = total / bytes_per_sec
+                elapsed_sec = time.monotonic() - playback_start
+                # If audio was starved or paused mid-reply, reset playback baseline
+                if elapsed_sec > audio_sent_sec:
+                    playback_start = time.monotonic() - audio_sent_sec
+                    elapsed_sec = audio_sent_sec
+
+                lead_sec = audio_sent_sec - elapsed_sec
+                if lead_sec > target_lead_sec:
+                    await asyncio.sleep(lead_sec - target_lead_sec)
+
                 await robot_socket.send(b"\x01" + bytes(buf[:FRAME_BYTES]))
                 del buf[:FRAME_BYTES]
                 total += FRAME_BYTES
             chunk = await self._next()
+
         if buf and robot_socket is not None:
+            audio_sent_sec = total / bytes_per_sec
+            elapsed_sec = time.monotonic() - playback_start
+            if elapsed_sec > audio_sent_sec:
+                playback_start = time.monotonic() - audio_sent_sec
+                elapsed_sec = audio_sent_sec
+            lead_sec = audio_sent_sec - elapsed_sec
+            if lead_sec > target_lead_sec:
+                await asyncio.sleep(lead_sec - target_lead_sec)
+
             await robot_socket.send(b"\x01" + bytes(buf))
             total += len(buf)
+
         await send_to_robot({"type": "speak_end"})
         try:
             await asyncio.wait_for(robot_speak_done.wait(), timeout=total / 32000 + 5)

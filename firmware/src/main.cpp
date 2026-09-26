@@ -2,16 +2,18 @@
 //
 // Hardware:
 //   - MCU: ESP32-S3 SuperMini (Dual-core Xtensa LX7 @ 240MHz, 4MB Flash, USB-C)
-//   - Display: 1.28" Round IPS TFT LCD (240x240 GC9A01 4-wire SPI)
+//   - Display: 1.3" I2C OLED (SH1106 128x64) [default] or 1.28" Round IPS TFT (GC9A01 240x240)
 //   - Audio Output: Dual MAX98357A I2S 3W Class-D Amplifiers (Dual Mono)
 //   - Microphone: MAX9814 Electret Microphone with AGC (ADC1_CH0 / GPIO 1)
 //   - Touch: Dual TTP223 Capacitive Sensors (Head = Pet/Talk, Cheek = Mute/Sleep)
 
 #include <Arduino.h>
+#include <Wire.h>
 #include <SPI.h>
 #include <WiFi.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_GC9A01A.h>
+#include <Adafruit_SH110X.h>
 
 #include "camera.h"
 #include "config.h"
@@ -35,10 +37,18 @@
 #define HAVE_BRAIN 0
 #endif
 
-// Display driver on SPI
+// Display drivers:
+// TFT declaration preserved:
 Adafruit_GC9A01A tft(PIN_LCD_CS, PIN_LCD_DC, PIN_LCD_RES);
 
+#if USE_SH1106_OLED
+// 1.3" Monochrome I2C OLED (SH1106 128x64)
+Adafruit_SH1106G oled(SCREEN_W, SCREEN_H, &Wire, PIN_OLED_RES);
+Face face(oled);
+#else
 Face face(tft);
+#endif
+
 ServoNeck panNeck;
 ServoNeck tiltNeck;
 Link brainLink;
@@ -210,6 +220,28 @@ void setup() {
   Serial.begin(115200);
   randomSeed(esp_random());
 
+#if USE_SH1106_OLED
+  // Initialize I2C bus for 1.3" SH1106 OLED: SDA=GPIO 11, SCL=GPIO 12
+  Wire.begin(PIN_OLED_SDA, PIN_OLED_SCL);
+  Wire.setClock(400000); // 400kHz fast I2C
+
+  // I2C bus scan diagnostics to confirm device presence
+  delay(100);
+  Serial.printf("\n[I2C] Scanning bus on SDA=%d, SCL=%d...\n", PIN_OLED_SDA, PIN_OLED_SCL);
+  uint8_t foundCount = 0;
+  for (uint8_t addr = 1; addr < 127; addr++) {
+    Wire.beginTransmission(addr);
+    if (Wire.endTransmission() == 0) {
+      Serial.printf("[I2C] Found active device at address 0x%02X\n", addr);
+      foundCount++;
+    }
+  }
+  if (foundCount == 0) {
+    Serial.println(F("[I2C] WARNING: No I2C devices found! Check wiring: VCC, GND, SDA (GPIO 11), SCL (GPIO 12)."));
+  }
+
+  face.begin();
+#else
   // Backlight control for GC9A01 LCD (if connected to GPIO 13)
   if (PIN_LCD_BLK != 255) {
     pinMode(PIN_LCD_BLK, OUTPUT);
@@ -219,6 +251,7 @@ void setup() {
   // SPI Hardware bus for GC9A01 display: SCL=12, SDA=11, CS=10
   SPI.begin(PIN_LCD_SCL, -1, PIN_LCD_SDA, PIN_LCD_CS);
   face.begin();
+#endif
 
   // Virtual neck for easing & gaze (no servos wired)
 #if HAVE_SERVOS
@@ -303,7 +336,7 @@ void setup() {
   Serial.printf("\n[link] secrets.h active! Connecting to WiFi \"%s\" (Brain: %s:%d)...\n", WIFI_SSID, BRAIN_HOST, BRAIN_PORT);
   brainLink.onAudio([](const uint8_t* pcm, size_t len) { speaker.feed(pcm, len); });
 #ifndef ROBOT_TOKEN
-#define ROBOT_TOKEN ""
+  #define ROBOT_TOKEN ""
 #endif
   brainLink.begin(WIFI_SSID, WIFI_PASS, BRAIN_HOST, BRAIN_PORT, ROBOT_TOKEN,
              [](const String& cmd) { handleCommand(cmd); },
@@ -395,9 +428,14 @@ void loop() {
     lastFrameMs = now;
     face.setTalking(speaker.speaking(), speaker.level());
 
-    // Map virtual neck pan/tilt to face gaze on the round screen
+    // Map virtual neck pan/tilt to face gaze
+#if USE_SH1106_OLED
+    float gazeX = (panNeck.current() / 60.0f) * 8.0f;
+    float gazeY = (tiltNeck.current() / 60.0f) * 4.0f;
+#else
     float gazeX = (panNeck.current() / 60.0f) * 14.0f;
     float gazeY = (tiltNeck.current() / 60.0f) * 8.0f;
+#endif
     face.setNeckGaze(gazeX, gazeY);
 
     face.update(now);

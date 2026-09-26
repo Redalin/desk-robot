@@ -16,9 +16,14 @@ void Speaker::begin(uint8_t bclkPin, uint8_t lrcPin, uint8_t dinPin,
 
   ring_ = static_cast<uint8_t*>(ps_malloc(RING_BYTES));
   if (ring_ == nullptr) {
-    // No PSRAM on SuperMini: fall back to internal SRAM ring buffer (~2 s).
-    ringSize_ = 64 * 1024;
+    // No PSRAM on SuperMini: fall back to internal SRAM ring buffer.
+    // Try 96 KB (~3 s of audio), fall back to 64 KB if allocation fails.
+    ringSize_ = 96 * 1024;
     ring_ = static_cast<uint8_t*>(malloc(ringSize_));
+    if (ring_ == nullptr) {
+      ringSize_ = 64 * 1024;
+      ring_ = static_cast<uint8_t*>(malloc(ringSize_));
+    }
   } else {
     ringSize_ = RING_BYTES;
   }
@@ -70,16 +75,25 @@ void Speaker::beginSpeech(size_t expectedBytes) {
 
 void Speaker::feed(const uint8_t* pcm, size_t len) {
   if (ring_ == nullptr || len == 0) return;
+  // Enforce 16-bit sample (2-byte) alignment so samples are never split mid-byte
+  len &= ~1;
+  if (len == 0) return;
+
   if (!speaking_) {
     beginSpeech(0);
   }
   portENTER_CRITICAL(&lock_);
   size_t used = (head_ + ringSize_ - tail_) % ringSize_;
-  size_t space = ringSize_ - 1 - used;
+  size_t space = (ringSize_ - 1 - used) & ~1;  // Keep space 16-bit aligned
   if (len > space) len = space;  // drop the tail rather than wrap over unread audio
-  for (size_t i = 0; i < len; ++i) {
-    ring_[head_] = pcm[i];
-    head_ = (head_ + 1) % ringSize_;
+
+  if (len > 0) {
+    size_t first = min(len, ringSize_ - head_);
+    memcpy(ring_ + head_, pcm, first);
+    if (len > first) {
+      memcpy(ring_, pcm + first, len - first);
+    }
+    head_ = (head_ + len) % ringSize_;
   }
   portEXIT_CRITICAL(&lock_);
 }
@@ -95,10 +109,15 @@ size_t Speaker::available() const {
 
 size_t Speaker::readInto(uint8_t* out, size_t maxLen) {
   portENTER_CRITICAL(&lock_);
-  size_t n = min(maxLen, available());
-  for (size_t i = 0; i < n; ++i) {
-    out[i] = ring_[tail_];
-    tail_ = (tail_ + 1) % ringSize_;
+  size_t avail = available() & ~1;
+  size_t n = min(maxLen & ~1, avail);
+  if (n > 0) {
+    size_t first = min(n, ringSize_ - tail_);
+    memcpy(out, ring_ + tail_, first);
+    if (n > first) {
+      memcpy(out + first, ring_, n - first);
+    }
+    tail_ = (tail_ + n) % ringSize_;
   }
   portEXIT_CRITICAL(&lock_);
   return n;

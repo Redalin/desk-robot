@@ -2,6 +2,11 @@
 
 #include <Arduino.h>
 
+// ─── Display Selection Flag ──────────────────────────────────────────────────
+#ifndef USE_SH1106_OLED
+#define USE_SH1106_OLED 1   // 1 = 1.3" I2C OLED (SH1106 128x64), 0 = 1.28" SPI Round TFT (GC9A01 240x240)
+#endif
+
 // ─── Pin Map (ESP32-S3 SuperMini) ────────────────────────────────────────────
 //
 // Wiring Layout:
@@ -13,12 +18,22 @@
 //                    Ground | 2 | GND          RX| 2 | ---> (Leave Free / Serial RX)
 //         INMP441 VDD (+3V3)| 3 | 3V3           1| 3 | ---> INMP441 SD (Data Out -> GPIO 1)
 //          (Optional BLK)   | 4 | 13            2| 4 | ---> Touch 2 (Cheek / Mute / Sleep)
-//    GC9A01 SCL (SPI Clock) | 5 | 12            3| 5 | ---> INMP441 SCK (Clock -> GPIO 3)
-//     GC9A01 SDA (SPI MOSI) | 6 | 11            4| 6 | ---> Touch 1 (Head / Pet / Talk)
+//   OLED SCL / GC9A01 SCL   | 5 | 12            3| 5 | ---> INMP441 SCK (Clock -> GPIO 3)
+//   OLED SDA / GC9A01 SDA   | 6 | 11            4| 6 | ---> Touch 1 (Head / Pet / Talk)
 //         GC9A01 CS (Chip)  | 7 | 10            5| 7 | ---> I2S BCLK  --+--> Amp 1 & 2 BCLK
 //        GC9A01 DC (Data)   | 8 | 9             6| 8 | ---> I2S LRC   --+--> Amp 1 & 2 LRC
 //       GC9A01 RES (Reset)  | 9 | 8             7| 9 | ---> I2S DIN   --+--> Amp 1 & 2 DIN
 //                           +---+----------------+---+
+//
+// Display Wiring:
+//   - 1.3" SH1106 I2C OLED (USE_SH1106_OLED = 1):
+//       * VCC ---> 3V3 (Left Pin 3) or 5V (Left Pin 1)
+//       * GND ---> GND (Left Pin 2)
+//       * SCL ---> GPIO 12 (Left Pin 5)
+//       * SDA ---> GPIO 11 (Left Pin 6)
+//       * RES ---> Optional (leave disconnected or -1)
+//   - GC9A01 SPI TFT (USE_SH1106_OLED = 0):
+//       * SCL ---> GPIO 12, SDA ---> GPIO 11, CS ---> GPIO 10, DC ---> GPIO 9, RES ---> GPIO 8
 //
 // INMP441 / MS3625 I2S MEMS Microphone Module Wiring:
 //   - VDD  ---> ESP32 3V3 (Left Pin 3)
@@ -28,7 +43,8 @@
 //   - WS   ---> ESP32 TX / GPIO 43 (Right Pin 1)
 //   - L/R  ---> Connect to GND (selects Left audio channel)
 
-// ─── Display (GC9A01 240x240 Round SPI TFT) ──────────────────────────────────
+// ─── Display Pin Definitions (both preserved for build flag switching) ───────
+// GC9A01 240x240 Round SPI TFT:
 constexpr uint8_t PIN_LCD_SCL = 12; // SPI Clock
 constexpr uint8_t PIN_LCD_SDA = 11; // SPI MOSI (Data)
 constexpr uint8_t PIN_LCD_CS  = 10; // Chip Select
@@ -36,14 +52,26 @@ constexpr uint8_t PIN_LCD_DC  = 9;  // Data/Command
 constexpr uint8_t PIN_LCD_RES = 8;  // Hardware Reset
 constexpr uint8_t PIN_LCD_BLK = 13; // Backlight enable (optional)
 
+constexpr uint8_t PIN_OLED_SDA  = 11;   // I2C Data
+constexpr uint8_t PIN_OLED_SCL  = 12;   // I2C Clock
+constexpr int8_t  PIN_OLED_RES  = -1;   // Reset pin (-1 if unneeded)
+constexpr uint8_t OLED_I2C_ADDR = 0x3C; // Standard SH1106 I2C address (0x3C or 0x3D)
+constexpr uint8_t OLED_ROTATION = 2;    // 0 = Normal, 2 = 180 deg (flip upside down)
+constexpr uint8_t TFT_ROTATION  = 0;    // 0 = Normal, 2 = 180 deg
+
+#if USE_SH1106_OLED
+constexpr int SCREEN_W = 128;
+constexpr int SCREEN_H = 64;
+#else
 constexpr int SCREEN_W = 240;
 constexpr int SCREEN_H = 240;
+#endif
 
 // ─── Speaker (MAX98357A I2S Class-D Amps on I2S0) ────────────────────────────
 constexpr uint8_t PIN_I2S_BCLK = 5; // Bit Clock (shared by Amp 1 & 2)
 constexpr uint8_t PIN_I2S_LRC  = 6; // Word Select / Left-Right Clock
 constexpr uint8_t PIN_I2S_DIN  = 7; // Serial Data In
-constexpr float SPEAKER_VOLUME = 0.8f; // 0.0 - 1.0
+constexpr float SPEAKER_VOLUME = 0.3f; // 0.0 - 1.0
 
 // ─── Microphone Configuration (INMP441/MS3625 on I2S1 vs MAX9814 on ADC) ─────
 #ifndef MIC_TYPE_I2S
@@ -54,7 +82,7 @@ constexpr float SPEAKER_VOLUME = 0.8f; // 0.0 - 1.0
 constexpr uint8_t PIN_MIC_SCK = 3;   // Bit Clock (SCK)       ---> GPIO 3
 constexpr uint8_t PIN_MIC_WS  = 43;  // Word Select (WS / LRC) ---> Header TX pin (GPIO 43)
 constexpr uint8_t PIN_MIC_SD  = 1;   // Serial Data In (SD)   ---> GPIO 1
-constexpr float MIC_GAIN      = 1.5f; // Digital sensitivity gain
+constexpr float MIC_GAIN      = 3.0f; // Digital sensitivity gain
 #else
 constexpr uint8_t PIN_MIC_ADC = 1;   // GPIO 1 = ADC1_CH0
 constexpr float MIC_GAIN      = 4.0f; // Analog gain
