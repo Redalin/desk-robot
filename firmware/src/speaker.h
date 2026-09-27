@@ -27,6 +27,7 @@ class Speaker {
   void endSpeech();
   bool speaking() const { return speaking_; }
   void setVolume(float v) { volume_ = constrain(v, 0.0f, 1.0f); }
+  float volume() const { return volume_; }
   // Loudness (RMS 0..1) of the audio being played right now; 0 when silent.
   float level() const { return speaking_ ? level_ : 0.0f; }
 

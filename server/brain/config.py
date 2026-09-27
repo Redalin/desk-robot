@@ -116,10 +116,11 @@ STT_MODEL = "base.en"    # faster-whisper model: base.en ~0.3 s per utterance on
 STT_REVISION = "3d3d5dee26484f91867d81cb899cfcf72b96be6c"
 STT_THREADS = 8          # CPU threads for transcription (0 = library default of 4)
 STT_PROMPT = f"Hey {ROBOT_NAME}. {ROBOT_NAME} is a robot."  # name hint for the model
-MIC_SOURCE = "auto"      # "robot" = the robot's mic, "mac" = MIC_DEVICE below,
+MIC_SOURCE = "robot"      # "robot" = the robot's mic, "mac" = MIC_DEVICE below,
                          # "auto" = robot when it's connected, else this computer
 MIC_DEVICE = os.environ.get("MIC_DEVICE") or None  # local input by name (set MIC_DEVICE in
                          # server/.env); None = system default. List devices: python -m sounddevice
+MIC_GAIN = float(os.environ.get("MIC_GAIN", 3.0))  # microphone gain multiplier (0.5..10.0)
 # Speech detection (server/brain/turn.py). A Silero VAD model decides whether
 # each 32 ms chunk is speech (VAD_THRESHOLD, 0..1: lower = more sensitive).
 # Once speech starts, a cutoff 0.15 lower keeps softer syllables from being
@@ -167,8 +168,8 @@ EMOTIONS = [
 # Camera. Set HAVE_CAMERA = False when no camera module is connected.
 HAVE_CAMERA = os.environ.get("HAVE_CAMERA", "false").lower() in ("1", "true", "yes")
 CAMERA_FPS = 10
-LIVE_VIEW_PORT = 8766
-LIVE_VIEW_BIND = "127.0.0.1"  # this computer only. "0.0.0.0" would show the camera to the whole LAN.
+LIVE_VIEW_PORT = int(os.environ.get("LIVE_VIEW_PORT", 8766))
+LIVE_VIEW_BIND = os.environ.get("LIVE_VIEW_BIND", "0.0.0.0")  # "0.0.0.0" serves to local network and localhost
 SEND_CAMERA_TO_BRAIN = False  # disabled because no camera is connected
 # A frame is attached only when the question is about seeing (any of these
 # words or phrases). Everyday words like "this", "that", "here", "there" and

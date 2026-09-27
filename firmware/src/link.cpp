@@ -91,6 +91,7 @@ void Link::onEvent(WStype_t type, uint8_t* payload, size_t length) {
       doc["who"] = "desk-robot";
       doc["fw"] = FW_VERSION;
       doc["token"] = token_;  // the brain drops connections without it
+      if (onHello_) onHello_(doc);
       String out;
       serializeJson(doc, out);
       sendJson(out);
@@ -156,6 +157,10 @@ void Link::handleMessage(const char* json) {
   } else if (!strcmp(type, "volume")) {
     Serial.printf("[link] <- volume %.2f\n", static_cast<float>(doc["level"] | 0.5f));
     cmd = String("volume ") + String(doc["level"] | 0.5f, 2);
+  } else if (!strcmp(type, "mic_gain") || !strcmp(type, "gain")) {
+    float g = doc["gain"] | 3.0f;
+    Serial.printf("[link] <- mic_gain %.2f\n", g);
+    cmd = String("gain ") + String(g, 2);
   } else if (!strcmp(type, "mic")) {
     Serial.printf("[link] <- mic %s\n", (doc["on"] | false) ? "on" : "off");
     cmd = String("mic ") + ((doc["on"] | false) ? "on" : "off");

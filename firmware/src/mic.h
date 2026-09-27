@@ -28,6 +28,9 @@ class Mic {
   // RMS (0..1) of the most recent frame, for level checks over serial.
   float level() const { return level_; }
 
+  void setGain(float g) { gain_ = constrain(g, 0.1f, 15.0f); }
+  float gain() const { return gain_; }
+
  private:
   static void taskEntry(void* self);
   void task();

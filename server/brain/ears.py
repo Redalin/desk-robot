@@ -277,6 +277,7 @@ class Ears:
         self.mac_error: str | None = None  # why the Mac mic could not be opened, if it couldn't
         self.muted = threading.Event()  # set while Rocky is talking (no echo cancel)
         self.source = "mac"             # "mac" or "robot": whose audio is live
+        self.gain = float(getattr(config, "MIC_GAIN", 3.0))
         self.level = 0.0                # RMS of the latest live block (for `mic`)
         self._blocks: queue.Queue[np.ndarray | None] = queue.Queue()
         self._stream = None
@@ -284,6 +285,9 @@ class Ears:
         self._highpass = HighPass()
         self._segmenter = Segmenter(SileroVAD(), SmartTurn(), on_speech_start)
         self.transcriber = Transcriber()
+
+    def set_gain(self, gain: float) -> None:
+        self.gain = max(0.1, min(15.0, float(gain)))
 
     def set_source(self, source: str) -> None:
         """Switch between the Mac mic and the robot mic."""
@@ -313,6 +317,8 @@ class Ears:
             return
         block = np.frombuffer(pcm16, dtype=np.int16).astype(np.float32) / 32768.0
         block = self._highpass.process(block)
+        if self.gain != 3.0:
+            block = np.clip(block * (self.gain / 3.0), -1.0, 1.0)
         self.level = float(np.sqrt(np.mean(block * block)))
         self._blocks.put(block)
 
@@ -359,7 +365,10 @@ class Ears:
 
     def _on_audio(self, indata, frames, time_info, status) -> None:
         if self.source == "mac" and not self.muted.is_set():
-            block = np.clip(indata.sum(axis=1), -1.0, 1.0)
+            block = indata.sum(axis=1)
+            if self.gain != 3.0:
+                block = block * (self.gain / 3.0)
+            block = np.clip(block, -1.0, 1.0)
             self.level = float(np.sqrt(np.mean(block * block)))
             self._blocks.put(block)
 

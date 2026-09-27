@@ -71,11 +71,60 @@ TUNABLE = {                 # config knobs the console may change live: (min, ma
     "TURN_THRESHOLD": (0.1, 0.95),
     "TURN_MAX_SILENCE": (0.5, 6.0),
     "AWAKE_SECONDS": (10.0, 600.0),
+    "MIC_GAIN": (0.5, 15.0),
 }
 VOICE_TUNABLE = {           # speaker tuning the console may change live (mouth.Leveler reads these per reply)
     "TTS_LEVEL": (0.08, 0.40),
     "TTS_HIGHPASS_HZ": (0.0, 600.0),
     "TTS_PRESENCE_DB": (0.0, 12.0),
+}
+
+# Real-time state for Rocky's status dashboard
+activity_log: list[dict] = []
+MAX_ACTIVITIES = 200
+
+def log_activity(category: str, message: str, detail: dict | None = None) -> None:
+    now = time.time()
+    entry = {
+        "id": len(activity_log) + 1,
+        "time": time.strftime("%H:%M:%S", time.localtime(now)),
+        "timestamp": now,
+        "category": category,  # "voice", "brain", "sensor", "periph", "system", "action"
+        "message": message,
+        "detail": detail or {},
+    }
+    activity_log.append(entry)
+    if len(activity_log) > MAX_ACTIVITIES:
+        del activity_log[:-MAX_ACTIVITIES]
+
+log_activity("system", f"{config.ROBOT_NAME} brain server started (model: {config.MODEL})")
+
+current_thought: dict = {
+    "active": False,
+    "question": "",
+    "thought": "",
+    "last_completed": "",
+    "tool_calls": [],
+    "emotion": "neutral",
+    "started_at": 0.0,
+    "elapsed_s": 0.0,
+}
+
+robot_info: dict = {
+    "connected": False,
+    "peer": None,
+    "fw": None,
+    "wifi_rssi": None,
+    "heap_kb": None,
+    "peripherals": {
+        "display": {"loaded": True, "name": "SH1106 OLED / GC9A01 TFT", "type": "Display", "status": "Ready"},
+        "mic": {"loaded": True, "name": "INMP441 MEMS / MAX9814", "type": "Microphone", "status": "Ready"},
+        "speaker": {"loaded": True, "name": "MAX98357A Class-D", "type": "Speaker", "status": "Ready"},
+        "touch": {"loaded": True, "name": "TTP223 Dual Capacitive", "type": "Touch Sensors", "status": "Ready"},
+        "camera": {"loaded": getattr(config, "HAVE_CAMERA", False), "name": "OV2640", "type": "Camera", "status": "Ready" if getattr(config, "HAVE_CAMERA", False) else "Not Fitted"},
+        "servos": {"loaded": True, "name": "Virtual Neck / Servos", "type": "Motion", "status": "Ready"},
+    },
+    "all_loaded": True,
 }
 
 
@@ -134,10 +183,23 @@ async def handle_robot(websocket: websockets.ServerConnection) -> None:
         await websocket.close(1013)
         return
     robot_socket = websocket
+    robot_info["connected"] = True
+    robot_info["peer"] = peer
+    robot_info["fw"] = str(hello.get("fw", "1.0"))
+    if "peripherals" in hello and isinstance(hello["peripherals"], dict):
+        robot_info["peripherals"].update(hello["peripherals"])
+        robot_info["all_loaded"] = all(
+            v.get("loaded", True) if isinstance(v, dict) else True
+            for k, v in robot_info["peripherals"].items()
+            if k != "camera" or getattr(config, "HAVE_CAMERA", False)
+        )
     print(f"robot connected! (fw {hello.get('fw', '?')}, {peer})")
+    log_activity("periph", f"Rocky connected via WiFi ({peer}, FW {robot_info['fw']})", robot_info["peripherals"])
     pick_mic_source()
     if config.MIC_SOURCE in ("auto", "robot"):
         await send_to_robot({"type": "mic", "on": True})
+        if getattr(config, "MIC_GAIN", None):
+            await send_to_robot({"type": "mic_gain", "gain": config.MIC_GAIN})
     if getattr(config, "HAVE_CAMERA", False):
         await send_to_robot({"type": "stream", "on": True, "fps": config.CAMERA_FPS})
     # No idle head glances: they fight deliberate looks. The eyes still move.
@@ -158,9 +220,20 @@ async def handle_robot(websocket: websockets.ServerConnection) -> None:
             if not isinstance(event, dict):
                 continue
             if event.get("type") == "state":
-                continue  # heartbeat every 5 s; not worth the console space
+                if "rssi" in event:
+                    robot_info["wifi_rssi"] = event.get("rssi")
+                if "heap_kb" in event:
+                    robot_info["heap_kb"] = event.get("heap_kb")
+                if "peripherals" in event and isinstance(event["peripherals"], dict):
+                    robot_info["peripherals"].update(event["peripherals"])
+                continue
+            if event.get("type") == "touch":
+                sensor = event.get("sensor", "unknown")
+                log_activity("sensor", f"Rocky touch sensor '{sensor}' pressed")
+                continue
             if event.get("type") == "speak_done":
                 robot_speak_done.set()
+                log_activity("voice", "Rocky finished speaking reply")
                 continue
             if event.get("type") == "temp":
                 try:
@@ -176,6 +249,8 @@ async def handle_robot(websocket: websockets.ServerConnection) -> None:
         # new connection can arrive before the old one is noticed as dead.
         if robot_socket is websocket:
             robot_socket = None
+            robot_info["connected"] = False
+            log_activity("system", "Rocky disconnected from brain")
             print("robot disconnected")
             pick_mic_source()
 
@@ -376,8 +451,8 @@ class SpokenReply:
     def text(self) -> str:
         return " ".join(self.spoken)
 
-    def think_and_speak(self, question: str, jpeg: bytes | None, camera_wanted: bool = False) -> None:
-        threading.Thread(target=self._think, args=(question, jpeg, camera_wanted), daemon=True).start()
+    def think_and_speak(self, question: str, jpeg: bytes | None, camera_wanted: bool = False, on_thought: Callable[[str], None] | None = None) -> None:
+        threading.Thread(target=self._think, args=(question, jpeg, camera_wanted, on_thought), daemon=True).start()
         threading.Thread(target=self._voice, daemon=True).start()
 
     def speak_fixed(self, text: str) -> None:
@@ -394,9 +469,9 @@ class SpokenReply:
         self.tl.mark("face")
         asyncio.run_coroutine_threadsafe(send_to_robot({"type": "emotion", "name": name}), self.loop)
 
-    def _think(self, question: str, jpeg: bytes | None, camera_wanted: bool) -> None:
+    def _think(self, question: str, jpeg: bytes | None, camera_wanted: bool, on_thought: Callable[[str], None] | None = None) -> None:
         gen = brain.reply(question, jpeg, on_emotion=self._on_emotion, cancelled=self.cancel,
-                          camera_wanted=camera_wanted)
+                          camera_wanted=camera_wanted, on_thought=on_thought)
         try:
             for sentence in gen:
                 if self.cancel.is_set():
@@ -560,9 +635,23 @@ async def converse(question: str, ended_at: float | None = None, heard_at: float
     if camera_wanted and jpeg is None:
         print("  (camera has no fresh frame — telling him he can't see right now)")
     reply = SpokenReply(loop, tl)
-    reply.think_and_speak(question, jpeg, camera_wanted)
     global thinking
     thinking = True
+    current_thought["active"] = True
+    current_thought["question"] = question
+    current_thought["thought"] = ""
+    current_thought["tool_calls"] = []
+    current_thought["emotion"] = "thinking"
+    current_thought["started_at"] = time.time()
+    current_thought["elapsed_s"] = 0.0
+    log_activity("brain", f"Rocky thinking about: \"{question}\"")
+
+    def _thought_cb(chunk: str) -> None:
+        current_thought["thought"] += chunk
+        current_thought["emotion"] = brain.emotion if brain else "thinking"
+        current_thought["elapsed_s"] = round(time.time() - current_thought["started_at"], 1)
+
+    reply.think_and_speak(question, jpeg, camera_wanted, on_thought=_thought_cb)
     try:
         finished = await reply.play()
     except Exception as e:  # a speaker hiccup shouldn't kill the server
@@ -570,12 +659,16 @@ async def converse(question: str, ended_at: float | None = None, heard_at: float
         finished = True
     finally:
         thinking = False
+        current_thought["active"] = False
+        current_thought["elapsed_s"] = round(time.time() - current_thought["started_at"], 1)
     if not finished:
         print("  (you kept talking — Rocky will hear the rest and answer once)")
         await send_to_robot({"type": "emotion", "name": "neutral"})
         return False
     if reply.text:
         eyes.last_said = reply.text
+        current_thought["last_completed"] = reply.text
+        log_activity("voice", f"Rocky said [{brain.emotion if brain else 'neutral'}]: \"{reply.text}\"")
         if config.DEBUG_TTS_CHECK and reply.pcm:
             loop.run_in_executor(None, check_tts, reply.text, b"".join(reply.pcm))
     awake_until = time.time() + config.AWAKE_SECONDS
@@ -634,14 +727,18 @@ def console_state() -> dict:
     """Extra fields for /status: everything the page shows beyond the camera."""
     now = time.time()
     return {
-        "robot": robot_socket is not None,
+        "robot": robot_info,
+        "robot_connected": robot_socket is not None,
         "listening": ears is not None,
         "mic": ears.source if ears is not None else None,
+        "mic_gain": getattr(config, "MIC_GAIN", 3.0),
         "level": ears.level if ears is not None else 0.0,
         "speech_prob": ears.speech_prob if ears is not None else 0.0,
         "hearing": ears.hearing if ears is not None else False,
         "speaking": ears.muted.is_set() if ears is not None else False,
         "thinking": thinking,
+        "thought": current_thought,
+        "activities": list(reversed(activity_log[-60:])),
         "awake": now < awake_until,
         "awake_for": max(0.0, awake_until - now),
         "emotion": current_emotion,
@@ -650,6 +747,9 @@ def console_state() -> dict:
         "tracking_enabled": tracker.enabled if tracker is not None else False,
         "volume": speaker_volume,
         "tuning": {k: getattr(config, k) for k in TUNABLE},
+        "have_camera": getattr(config, "HAVE_CAMERA", False),
+        "camera_fresh": (now - eyes.frame_at < 3.0) if eyes.frame_at else False,
+        "model": config.MODEL,
     }
 
 
@@ -677,6 +777,7 @@ async def _console_command(action: str, payload: dict) -> dict:
         if name not in config.EMOTIONS:
             raise ValueError(f"emotions: {', '.join(config.EMOTIONS)}")
         await send_to_robot({"type": "emotion", "name": name})
+        log_activity("action", f"Emotion set to '{name}'")
     elif action == "head":
         pan = _number(payload, "pan", -config.TRACK_PAN_LIMIT, config.TRACK_PAN_LIMIT)
         tilt = _number(payload, "tilt", config.TRACK_TILT_MIN, config.TRACK_TILT_MAX)
@@ -687,31 +788,50 @@ async def _console_command(action: str, payload: dict) -> dict:
         await send_to_robot({"type": "tilt", "deg": tilt})
         if tracker is not None:
             tracker.note_pose(pan=pan, tilt=tilt)
+        log_activity("action", f"Head moved to pan {pan:.0f}°, tilt {tilt:.0f}°")
     elif action == "center":
         await set_head_held(False)
         await send_to_robot({"type": "pan", "deg": 0})
         await send_to_robot({"type": "tilt", "deg": 0})
         if tracker is not None:
             tracker.note_pose(pan=0, tilt=0)
+        log_activity("action", "Head centered and relaxed")
     elif action == "volume":
-        await set_volume(_number(payload, "level", 0.0, 1.0))
+        vol = _number(payload, "level", 0.0, 1.0)
+        await set_volume(vol)
+        log_activity("system", f"Speaker volume adjusted to {int(vol * 100)}%")
+    elif action == "mic_gain":
+        gain = _number(payload, "gain", 0.5, 15.0)
+        config.MIC_GAIN = gain
+        if ears is not None:
+            ears.set_gain(gain)
+        await send_to_robot({"type": "mic_gain", "gain": gain})
+        log_activity("system", f"Microphone sensitivity adjusted to {gain:.1f}x")
+    elif action == "clear_activities":
+        activity_log.clear()
+        log_activity("system", "Activity log cleared")
     elif action == "track":
-        await set_tracking(bool(payload.get("on", True)))
+        on = bool(payload.get("on", True))
+        await set_tracking(on)
+        log_activity("action", f"Face tracking {'enabled' if on else 'disabled'}")
     elif action == "sleep":
         if payload.get("on", True):
             awake_until = 0.0
             await send_to_robot({"type": "emotion", "name": "sleepy"})
             await send_to_robot({"type": "asleep", "on": True})
             await set_head_held(False)
+            log_activity("action", "Rocky put to sleep")
         else:
             awake_until = time.time() + config.AWAKE_SECONDS
             await send_to_robot({"type": "asleep", "on": False})
             await send_to_robot({"type": "emotion", "name": "neutral"})
+            log_activity("action", "Rocky awakened")
     elif action in ("say", "ask"):
         text = str(payload.get("text", "")).strip()
         if not text or len(text) > 300:
             raise ValueError("text must be 1 to 300 characters")
         print(f"console: {action} {text}")
+        log_activity("brain" if action == "ask" else "voice", f"Console {action}: \"{text}\"")
         asyncio.create_task(say(text) if action == "say" else converse(text))
     elif action == "tune":
         key = payload.get("key")
@@ -720,7 +840,12 @@ async def _console_command(action: str, payload: dict) -> dict:
         value = _number(payload, "value", *TUNABLE[key])
         setattr(config, key, value)
         if ears is not None:
-            ears.apply_config()
+            if key == "MIC_GAIN":
+                ears.set_gain(value)
+                await send_to_robot({"type": "mic_gain", "gain": value})
+            else:
+                ears.apply_config()
+        log_activity("system", f"Setting '{key}' tuned to {value:g}")
         print(f"console: {key} = {value:g} (until restart; set it in config.py to keep)")
     elif action == "voice":
         # Speaker tuning; takes effect on the next reply.
@@ -729,6 +854,7 @@ async def _console_command(action: str, payload: dict) -> dict:
             raise ValueError(f"voice settings: {', '.join(VOICE_TUNABLE)}")
         value = _number(payload, "value", *VOICE_TUNABLE[key])
         setattr(config, key, value)
+        log_activity("system", f"Voice setting '{key}' tuned to {value:g}")
         print(f"console: {key} = {value:g} (until restart; set it in config.py to keep)")
     else:
         raise ValueError(f"no such control: {action}")
@@ -869,18 +995,21 @@ async def _handle_heard(item: tuple[str, float, float, float]) -> None:
         return
     print(f"{config.HUMAN_NAME}: {text}")
     eyes.last_heard = text
+    log_activity("voice", f"Heard {config.HUMAN_NAME}: \"{text}\"")
     awake_until = time.time() + config.AWAKE_SECONDS  # anything you say keeps him up
     norm = normalize(text)
     lines = personality.LINES
     if any(p in norm for p in config.TRACK_ON_PHRASES) and not any(p in norm for p in config.TRACK_OFF_PHRASES):
         await set_tracking(True)
         print(f"{config.ROBOT_NAME} [happy]: {lines['track_on']}")
+        log_activity("action", "Face tracking enabled via voice command")
         await send_to_robot({"type": "emotion", "name": "happy"})
         await say(lines["track_on"])
         return
     if any(p in norm for p in config.TRACK_OFF_PHRASES):
         await set_tracking(False)
         print(f"{config.ROBOT_NAME} [neutral]: {lines['track_off']}")
+        log_activity("action", "Face tracking disabled via voice command")
         await send_to_robot({"type": "emotion", "name": "neutral"})
         await say(lines["track_off"])
         return
@@ -889,6 +1018,7 @@ async def _handle_heard(item: tuple[str, float, float, float]) -> None:
         # wakes him. No brain call.
         awake_until = 0.0
         print(f"{config.ROBOT_NAME} [sleepy]: {lines['sleep']}")
+        log_activity("action", "Rocky went to sleep via voice command")
         await send_to_robot({"type": "emotion", "name": "sleepy"})
         await say(lines["sleep"])
         await send_to_robot({"type": "asleep", "on": True})
@@ -897,6 +1027,7 @@ async def _handle_heard(item: tuple[str, float, float, float]) -> None:
     if woke:
         # Heard his name: eyes open, perk up to eye level (tilt can't go
         # above 0 on this build — the platform would hit the pan servo).
+        log_activity("brain", f"Rocky woke up to wake phrase '{config.ROBOT_NAME}'")
         await send_to_robot({"type": "asleep", "on": False})
         await send_to_robot({"type": "emotion", "name": "surprised"})
         if tracker is None or not tracker.tracking:

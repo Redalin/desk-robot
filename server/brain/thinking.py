@@ -123,6 +123,7 @@ class RobotBrain:
         on_emotion: Callable[[str], None] | None = None,
         cancelled: threading.Event | None = None,
         camera_wanted: bool = False,
+        on_thought: Callable[[str], None] | None = None,
     ) -> Iterator[str]:
         """Rocky's reply, one sentence at a time as the model writes it.
 
@@ -133,6 +134,7 @@ class RobotBrain:
         was never asked. `camera_wanted` with no `jpeg` means the question
         was about seeing but the camera had no fresh picture; he's told so,
         otherwise he answers from memory and claims to see things.
+        `on_thought(chunk)` streams raw thought tokens in real time.
         """
         content: list[dict] = [{"type": "text", "text": question}]
         if jpeg is not None:
@@ -148,7 +150,7 @@ class RobotBrain:
         spoken: list[str] = []
         error: tuple[str, str] | None = None
 
-        gen = self._converse(on_emotion, cancelled or threading.Event())
+        gen = self._converse(on_emotion, cancelled or threading.Event(), on_thought=on_thought)
         try:
             for sentence in gen:
                 spoken.append(sentence)
@@ -194,7 +196,12 @@ class RobotBrain:
             del self.history[mark:]
         self._inflight = None
 
-    def _converse(self, on_emotion: Callable[[str], None] | None, cancelled: threading.Event) -> Iterator[str]:
+    def _converse(
+        self,
+        on_emotion: Callable[[str], None] | None,
+        cancelled: threading.Event,
+        on_thought: Callable[[str], None] | None = None,
+    ) -> Iterator[str]:
         """One question, possibly several model calls if it uses its abilities.
         Yields sentences as they complete."""
         nudged = False
@@ -234,6 +241,8 @@ class RobotBrain:
                         continue
                     raw.append(delta.content)
                     buf += delta.content
+                    if on_thought is not None:
+                        on_thought(delta.content)
                     if not tag_decided:
                         buf, tag_decided = self._take_emotion_tag(buf, final=False)
                         if not tag_decided:
@@ -294,6 +303,8 @@ class RobotBrain:
                         if img:
                             fresh = img
                     print(f"  [{c['name']} {args} -> {text}]")
+                    if on_thought is not None:
+                        on_thought(f" [action: {c['name']} -> {text}] ")
                     self.history.append({"role": "tool", "tool_call_id": c["id"], "content": text})
                 if fresh is not None:
                     self.history.append({

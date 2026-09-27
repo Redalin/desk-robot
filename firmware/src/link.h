@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <WebSocketsClient.h>
+#include <ArduinoJson.h>
 #include <functional>
 
 // Link: WiFi + a WebSocket to the brain server.
@@ -16,6 +17,7 @@ class Link {
   using CommandHandler = std::function<void(const String&)>;
   using StateHandler = std::function<void(bool connected)>;
   using AudioHandler = std::function<void(const uint8_t* pcm, size_t len)>;
+  using HelloProvider = std::function<void(JsonDocument& doc)>;
 
   void begin(const char* ssid, const char* pass, const char* host,
              uint16_t port, const char* token, CommandHandler onCommand,
@@ -23,6 +25,7 @@ class Link {
 
   // Binary frames from the brain: type byte 0x01 = TTS audio (16 kHz s16le).
   void onAudio(AudioHandler h) { onAudio_ = std::move(h); }
+  void onHello(HelloProvider p) { onHello_ = std::move(p); }
 
   // Call every loop().
   void update(uint32_t nowMs);
@@ -43,6 +46,7 @@ class Link {
   CommandHandler onCommand_;
   StateHandler onState_;
   AudioHandler onAudio_;
+  HelloProvider onHello_;
   const char* ssid_ = nullptr;
   const char* pass_ = nullptr;
   const char* token_ = "";

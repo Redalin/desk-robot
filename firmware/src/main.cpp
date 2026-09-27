@@ -23,6 +23,7 @@
 #include "servo_neck.h"
 #include "speaker.h"
 #include "touch.h"
+#include "web_server.h"
 
 #if __has_include("secrets.h")
 #include "secrets.h"
@@ -56,6 +57,7 @@ Speaker speaker;
 Mic mic;
 Camera camera;
 Touch touch;
+RockyWebServer webServer;
 
 uint32_t nextTempMs = 0;
 volatile bool speakDonePending = false;  // set by the speaker task, sent from loop()
@@ -144,7 +146,12 @@ void handleCommand(String line) {
     speaker.endSpeech();
   } else if (cmd == "volume") {
     speaker.setVolume(arg.toFloat());
-    Serial.printf("volume -> %.2f\n", arg.toFloat());
+    Serial.printf("volume -> %.2f\n", speaker.volume());
+    webServer.logActivity("Speaker volume: " + String(static_cast<int>(speaker.volume() * 100)) + "%");
+  } else if (cmd == "gain" || cmd == "mic_gain") {
+    mic.setGain(arg.toFloat());
+    Serial.printf("mic gain -> %.2f\n", mic.gain());
+    webServer.logActivity("Mic sensitivity: " + String(mic.gain(), 1) + "x");
   } else if (cmd == "beep") {
     // 0.4 s of 440 Hz test tone
     static int16_t tone[16000 * 4 / 10];
@@ -286,6 +293,7 @@ void setup() {
 #if HAVE_TOUCH
   touch.begin(PIN_TOUCH_HEAD, PIN_TOUCH_CHEEK);
   touch.onHeadTouch([]() {
+    webServer.logActivity("Touch: Head (pet/wake)");
     if (face.asleep()) {
       face.setAsleep(false);
       applyGlances();
@@ -303,6 +311,7 @@ void setup() {
   });
 
   touch.onCheekTouch([]() {
+    webServer.logActivity("Touch: Cheek (mute/sleep)");
     if (speaker.speaking()) {
       speaker.endSpeech();
       Serial.println(F("[touch] Cheek: Muted speech"));
@@ -335,6 +344,41 @@ void setup() {
 #if HAVE_BRAIN
   Serial.printf("\n[link] secrets.h active! Connecting to WiFi \"%s\" (Brain: %s:%d)...\n", WIFI_SSID, BRAIN_HOST, BRAIN_PORT);
   brainLink.onAudio([](const uint8_t* pcm, size_t len) { speaker.feed(pcm, len); });
+  brainLink.onHello([](JsonDocument& doc) {
+    JsonObject periph = doc["peripherals"].to<JsonObject>();
+    JsonObject pD = periph["display"].to<JsonObject>();
+    pD["loaded"] = true;
+    pD["name"] = USE_SH1106_OLED ? "SH1106 1.3\" OLED (128x64)" : "GC9A01 1.28\" Round TFT (240x240)";
+    pD["type"] = "Display";
+
+    JsonObject pS = periph["speaker"].to<JsonObject>();
+    pS["loaded"] = true;
+    pS["name"] = "MAX98357A I2S Class-D";
+    pS["type"] = "Speaker";
+    pS["volume"] = speaker.volume();
+
+    JsonObject pM = periph["mic"].to<JsonObject>();
+    pM["loaded"] = true;
+    pM["name"] = MIC_TYPE_I2S ? "INMP441 / MS3625 I2S MEMS" : "MAX9814 Electret (ADC Analog)";
+    pM["type"] = "Microphone";
+    pM["gain"] = mic.gain();
+
+    JsonObject pT = periph["touch"].to<JsonObject>();
+    pT["loaded"] = (HAVE_TOUCH != 0);
+    pT["name"] = HAVE_TOUCH ? "TTP223 Dual Capacitive (Head/Cheek)" : "None";
+    pT["type"] = "Touch Sensors";
+
+    JsonObject pC = periph["camera"].to<JsonObject>();
+    pC["loaded"] = (HAVE_CAMERA && camera.ok());
+    pC["name"] = HAVE_CAMERA ? "OV2640" : "Not Installed";
+    pC["type"] = "Camera";
+
+    JsonObject pN = periph["servos"].to<JsonObject>();
+    pN["loaded"] = true;
+    pN["name"] = HAVE_SERVOS ? "Dual PWM Servos" : "Virtual Easing Neck";
+    pN["type"] = "Motion";
+  });
+
 #ifndef ROBOT_TOKEN
   #define ROBOT_TOKEN ""
 #endif
@@ -345,9 +389,13 @@ void setup() {
                demoMode = !connected;
                if (connected) {
                  face.setEmotion(Emotion::Happy);
+                 webServer.logActivity("Connected to Brain");
+               } else {
+                 webServer.logActivity("Disconnected from Brain");
                }
                applyGlances();
              });
+  webServer.begin();
 #else
   Serial.println(F("\n[link] WARNING: secrets.h NOT FOUND! Running in USB-only mode (WiFi disabled)."));
 #endif
@@ -373,6 +421,7 @@ void loop() {
 #endif
 
 #if HAVE_BRAIN
+  webServer.update();
   brainLink.update(now);
   if (speakDonePending) {
     speakDonePending = false;

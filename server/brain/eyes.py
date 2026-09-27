@@ -104,12 +104,22 @@ class Eyes:
             def log_message(self, *args) -> None:  # keep the console quiet
                 pass
 
+            def _is_local_host(self, host_str: str) -> bool:
+                if not host_str:
+                    return True
+                h = host_str.split(":")[0].strip("[]").lower()
+                if h in local_hosts or h == "0.0.0.0" or h.endswith(".local"):
+                    return True
+                import ipaddress
+                try:
+                    ip = ipaddress.ip_address(h)
+                    return ip.is_private or ip.is_loopback
+                except ValueError:
+                    return False
+
             def _local(self) -> bool:
-                # A malicious web page can point its own domain at 127.0.0.1
-                # (DNS rebinding) and read a localhost server. Only answer
-                # requests addressed to us by a local name.
-                host = (self.headers.get("Host") or "").split(":")[0].strip("[]").lower()
-                if host not in local_hosts:
+                host = self.headers.get("Host") or ""
+                if not self._is_local_host(host):
                     self._reply(403, "text/plain", b"forbidden")
                     return False
                 return True
@@ -117,13 +127,10 @@ class Eyes:
             def do_POST(self) -> None:
                 if not self._local():
                     return
-                # Controls: a page on another site could still POST here
-                # (browsers allow simple cross-site POSTs), so demand a custom
-                # header — that turns it into a preflighted request, and we
-                # never answer preflights. Belt and braces: check Origin too.
+                # Controls: demand custom header & local origin to prevent cross-site requests
                 origin = (self.headers.get("Origin") or "").lower()
                 origin_host = origin.split("://", 1)[-1].split(":")[0].strip("[]")
-                if self.headers.get("X-Rocky-Console") != "1" or (origin and origin_host not in local_hosts):
+                if self.headers.get("X-Rocky-Console") != "1" or not self._is_local_host(origin_host):
                     self._reply(403, "application/json", b'{"error": "not the console"}')
                     return
                 if not self.path.startswith("/api/") or eyes.command_handler is None:
