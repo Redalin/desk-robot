@@ -1,0 +1,27 @@
+services:
+  brain:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: desk-robot-brain
+    restart: unless-stopped
+    # stdin_open & tty are required so main.py's console_loop doesn't see EOF and exit
+    stdin_open: true
+    tty: true
+    ports:
+      - "8765:8765"   # Robot WebSocket connection
+      - "8766:8766"   # Browser Live View Console
+    env_file:
+      - .env
+    environment:
+      - LIVE_VIEW_BIND=0.0.0.0
+      - LIVE_VIEW_PORT=8766
+    volumes:
+      # Persist downloaded speech models (Whisper, Silero VAD, Smart Turn)
+      - brain-cache:/root/.cache
+      # Optional: mount debug output directory to inspect TTS audio / recordings
+      - ./debug:/app/debug
+
+volumes:
+  brain-cache:
+    name: desk-robot-cache

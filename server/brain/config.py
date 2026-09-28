@@ -38,8 +38,11 @@ HUMAN_NAME = os.environ.get("HUMAN_NAME", "friend")
 #
 # The model must accept images (Rocky sends camera frames) and tool calls
 # (he moves his head with them).
-LLM_BASE_URL = "https://openrouter.ai/api/v1"
-MODEL = "anthropic/claude-haiku-4.5"
+# LLM_BASE_URL = "https://openrouter.ai/api/v1"
+# MODEL = "anthropic/claude-haiku-4.5"
+
+LLM_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+MODEL = "gemini-3.8-flash"
 
 # WebSocket port the robot connects to.
 PORT = 8765

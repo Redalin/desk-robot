@@ -1,0 +1,32 @@
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Secrets and local configurations
+.env
+.env.*
+!.env.example
+
+# Debug recordings and logs
+debug/
+*.wav
+*.log
+
+# Git & IDE configs
+.git/
+.gitignore
+.vscode/
+.idea/
+.DS_Store
+
+# Docker files themselves
+Dockerfile*
+docker-compose*.yml
+.dockerignore
