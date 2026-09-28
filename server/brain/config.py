@@ -18,34 +18,19 @@ if _ENV_FILE.is_file():
             os.environ.setdefault(_k.strip(), _v)
 
 # The robot's name — the wake word is "hey <name>".
-ROBOT_NAME = "Rocky"
+ROBOT_NAME = os.environ.get("ROBOT_NAME", "Rocky")
 
 # Your name — Rocky calls you this. Set HUMAN_NAME in server/.env so it
 # stays out of the repo; "friend" until you do.
 HUMAN_NAME = os.environ.get("HUMAN_NAME", "friend")
 
 # Language model. The brain speaks the OpenAI-style chat API, which
-# OpenRouter, Anthropic and OpenAI all serve, so pick a provider here and
-# put its key in server/.env as LLM_API_KEY. OpenRouter is the default
-# because one key reaches every model, and the model is just a string:
-#
-#   provider    LLM_BASE_URL                       MODEL (examples)
-#   OpenRouter  https://openrouter.ai/api/v1       anthropic/claude-haiku-4.5   (best at staying in character, ~$1-4/month)
-#                                                  google/gemini-2.5-flash-lite (cheapest that still sounds like Rocky)
-#                                                  openai/gpt-4.1-mini          (middle ground)
-#   Anthropic   https://api.anthropic.com/v1/      claude-haiku-4-5
-#   OpenAI      https://api.openai.com/v1          gpt-4.1-mini
-#
-# The model must accept images (Rocky sends camera frames) and tool calls
-# (he moves his head with them).
-# LLM_BASE_URL = "https://openrouter.ai/api/v1"
-# MODEL = "anthropic/claude-haiku-4.5"
-
-LLM_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
-MODEL = "gemini-3.8-flash"
+# OpenRouter, Anthropic, OpenAI, and Google Gemini all serve.
+LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/")
+MODEL = os.environ.get("MODEL", "gemini-2.5-flash")
 
 # WebSocket port the robot connects to.
-PORT = 8765
+PORT = int(os.environ.get("PORT", 8765))
 
 # Rocky's voice and how much he says. The character itself (system prompt,
 # canned lines) is in personality.py.
@@ -70,16 +55,16 @@ PORT = 8765
 #                 Lifts a muffled voice; too much sounds thin and hissy.
 # The console page has sliders for level / bass cut / presence that apply
 # live; set the winners here to keep them.
-TTS_VOICE_ID = "6dd07916890445e59c5f019ad0fc7879"
-TTS_TEMPERATURE = 0.4
-TTS_TOP_P = 0.6
-REPLY_MAX_SENTENCES = 3
+TTS_VOICE_ID = os.environ.get("TTS_VOICE_ID", "6dd07916890445e59c5f019ad0fc7879")
+TTS_TEMPERATURE = float(os.environ.get("TTS_TEMPERATURE", 0.4))
+TTS_TOP_P = float(os.environ.get("TTS_TOP_P", 0.6))
+REPLY_MAX_SENTENCES = int(os.environ.get("REPLY_MAX_SENTENCES", 3))
 TTS_LEVEL = 0.12
 TTS_HIGHPASS_HZ = 0.0
 TTS_PRESENCE_DB = 0.0
 
 # Text-to-speech. The voice comes from Fish Audio (TTS_VOICE_ID above).
-TTS_FALLBACK_VOICE = "Fred"  # built-in voice used until Fish Audio is set up: a macOS `say`
+TTS_FALLBACK_VOICE = os.environ.get("TTS_FALLBACK_VOICE", "Fred")  # built-in voice used until Fish Audio is set up: a macOS `say`
                              # voice name (`say -v ?` lists them); Windows and Linux use their default
 PIPER_MODEL = os.environ.get("PIPER_MODEL", "en_US-lessac-medium")  # local neural voice if piper is installed
 # Loudness. Fish's level wanders from line to line, so the audio goes through
