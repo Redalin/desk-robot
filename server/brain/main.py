@@ -723,6 +723,27 @@ async def set_volume(level: float) -> None:
 
 # ── The live-view console (http://localhost:8766) ────────────────────────────
 
+def get_masked_key(key: str) -> str:
+    if not key:
+        return ""
+    if len(key) <= 8:
+        return "..." + key[-3:]
+    return key[:4] + "..." + key[-4:]
+
+
+def get_llm_provider(base_url: str) -> str:
+    url = (base_url or "").lower()
+    if "generativelanguage.googleapis.com" in url:
+        return "google"
+    if "openrouter.ai" in url:
+        return "openrouter"
+    if "api.openai.com" in url:
+        return "openai"
+    if "anthropic.com" in url:
+        return "anthropic"
+    return "custom"
+
+
 def console_state() -> dict:
     """Extra fields for /status: everything the page shows beyond the camera."""
     now = time.time()
@@ -750,6 +771,10 @@ def console_state() -> dict:
         "have_camera": getattr(config, "HAVE_CAMERA", False),
         "camera_fresh": (now - eyes.frame_at < 3.0) if eyes.frame_at else False,
         "model": config.MODEL,
+        "llm_base_url": config.LLM_BASE_URL,
+        "llm_provider": get_llm_provider(config.LLM_BASE_URL),
+        "has_llm_key": bool(os.environ.get("LLM_API_KEY")),
+        "masked_llm_key": get_masked_key(os.environ.get("LLM_API_KEY", "")),
     }
 
 
@@ -856,6 +881,27 @@ async def _console_command(action: str, payload: dict) -> dict:
         setattr(config, key, value)
         log_activity("system", f"Voice setting '{key}' tuned to {value:g}")
         print(f"console: {key} = {value:g} (until restart; set it in config.py to keep)")
+    elif action == "set_llm":
+        base_url = str(payload.get("base_url", "")).strip()
+        model = str(payload.get("model", "")).strip()
+        api_key = str(payload.get("api_key", "")).strip() or None
+        if not base_url:
+            raise ValueError("base_url cannot be empty")
+        if not model:
+            raise ValueError("model cannot be empty")
+        config.save_llm_config(base_url, model, api_key)
+        if brain is not None:
+            brain.update_client(config.LLM_BASE_URL, os.environ.get("LLM_API_KEY"))
+        provider_name = get_llm_provider(base_url)
+        log_activity("system", f"LLM updated to {model} ({provider_name})")
+        print(f"console: LLM switched to {model} @ {base_url}")
+        return {
+            "model": config.MODEL,
+            "llm_base_url": config.LLM_BASE_URL,
+            "llm_provider": provider_name,
+            "has_llm_key": bool(os.environ.get("LLM_API_KEY")),
+            "masked_llm_key": get_masked_key(os.environ.get("LLM_API_KEY", "")),
+        }
     else:
         raise ValueError(f"no such control: {action}")
     return {}

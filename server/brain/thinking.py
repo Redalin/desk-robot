@@ -104,12 +104,20 @@ class RobotBrain:
         self.client = openai.OpenAI(
             base_url=config.LLM_BASE_URL,
             api_key=os.environ.get("LLM_API_KEY", "missing"),
-            default_headers={"X-Title": "desk-robot"},  # shows up in OpenRouter's usage page; others ignore it
+            default_headers={"X-Title": "desk-robot", "HTTP-Referer": "http://localhost:8765"},
         )
         self.history: list[dict] = []
         self.actions = actions or {}
         self.emotion = "neutral"        # emotion of the reply in progress
         self._inflight: tuple[int, dict] | None = None  # (index, user message) being answered
+
+    def update_client(self, base_url: str, api_key: str | None = None) -> None:
+        """Re-initialize the OpenAI client with updated base URL and API key."""
+        self.client = openai.OpenAI(
+            base_url=base_url,
+            api_key=api_key or os.environ.get("LLM_API_KEY", "missing"),
+            default_headers={"X-Title": "desk-robot", "HTTP-Referer": "http://localhost:8765"},
+        )
 
     def ask(self, question: str, jpeg: bytes | None = None, camera_wanted: bool = False) -> Reply:
         """The whole reply at once. See reply() for the streaming form."""
@@ -159,11 +167,18 @@ class RobotBrain:
             gen.close()
             self._forget(mark, user_msg)
             raise
-        except openai.APIConnectionError:
+        except openai.APIConnectionError as e:
+            print(f"(LLM connection error: {e})")
             error = ("Brain cannot reach internet. Bad bad bad.", "sad")
-        except openai.AuthenticationError:
+        except openai.AuthenticationError as e:
+            print(f"(LLM authentication error: {e})")
             error = ("Brain has no key. Set LLM_API_KEY, human.", "sad")
         except openai.APIStatusError as e:
+            req_url = getattr(getattr(e, "request", None), "url", getattr(getattr(e, "response", None), "url", "unknown URL"))
+            resp_body = getattr(getattr(e, "response", None), "text", "")
+            print(f"(LLM API status error {e.status_code} for model '{config.MODEL}' at URL '{req_url}': {e.message})")
+            if resp_body:
+                print(f"  API Response body: {resp_body}")
             error = (f"Ow. Brain hurts. API error {e.status_code}.", "sad")
         finally:
             gen.close()

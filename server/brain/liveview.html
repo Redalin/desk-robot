@@ -290,6 +290,29 @@
     background: #090c13; border: 1px solid var(--line-strong); border-radius: 4px; padding: 8px 10px;
   }
   input[type=text]::placeholder { color: var(--muted); }
+  input[type=password] {
+    flex: 1; min-width: 140px; font: 13px var(--body); color: var(--ink);
+    background: #090c13; border: 1px solid var(--line-strong); border-radius: 4px; padding: 8px 10px;
+  }
+  input[type=password]::placeholder { color: var(--muted); }
+
+  /* ── LLM selector card ──────────────────────────────────────────────── */
+  .llm-field { margin-bottom: 12px; }
+  .llm-field label {
+    display: block; font: 10px var(--display); letter-spacing: .18em;
+    text-transform: uppercase; color: var(--muted); margin-bottom: 5px;
+  }
+  .llm-field select {
+    width: 100%; font: 13px var(--body); color: var(--ink);
+    background: #090c13; border: 1px solid var(--line-strong); border-radius: 4px;
+    padding: 8px 10px; cursor: pointer;
+  }
+  .llm-field select:focus { outline: 2px solid var(--amber); }
+  .llm-field select option { background: #0d121b; color: var(--ink); }
+  .llm-key-row { display: flex; gap: 8px; align-items: center; }
+  .llm-key-row input { flex: 1; }
+  .llm-key-row button { padding: 8px 12px; font-size: 11px; min-width: 60px; }
+  .llm-help { font: 10px var(--mono); color: var(--muted); margin-top: 4px; }
 
   .tune-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px 24px; }
   .tune { display: grid; grid-template-columns: 1fr 52px; gap: 6px 12px; align-items: center; padding: 6px 0; }
@@ -321,6 +344,7 @@
     </div>
     <ul class="vitals">
       <li><span class="k">Link</span><span class="v" id="link">—</span></li>
+      <li><span class="k">LLM</span><span class="v ok" id="vital-model">—</span></li>
       <li><span class="k">Peripherals</span><span class="v" id="periph-count">—</span></li>
       <li><span class="k">State</span><span class="v" id="state">—</span></li>
       <li><span class="k">Hull</span><span class="v" id="temp">—</span></li>
@@ -469,6 +493,49 @@
         <div class="faces" id="faces"></div>
       </div>
 
+      <!-- Language Model (LLM) Settings -->
+      <div class="card">
+        <h2 class="label">
+          <span>Language Model (LLM)</span>
+          <span class="badge ok" id="llm-badge">Active</span>
+        </h2>
+        <div class="field-desc" id="llm-active-desc" style="color:var(--amber); margin-bottom:12px; font-weight:500;">
+          Active: Loading…
+        </div>
+
+        <div class="llm-field">
+          <label for="llm-base-select">Base LLM</label>
+          <select id="llm-base-select">
+            <option value="google">Google Gemini (Official API)</option>
+            <option value="openrouter">OpenRouter (Multi-model Gateway)</option>
+            <option value="openai">OpenAI (Official API)</option>
+            <option value="custom">Custom Provider / URL</option>
+          </select>
+          <input type="text" id="llm-custom-url" placeholder="https://your-llm-host/v1" style="display:none; margin-top:6px; width:100%;">
+        </div>
+
+        <div class="llm-field">
+          <label for="llm-model-select">Model</label>
+          <select id="llm-model-select"></select>
+          <input type="text" id="llm-custom-model" placeholder="e.g. gemini-2.0-flash or anthropic/claude-3.5-haiku" style="display:none; margin-top:6px; width:100%;">
+        </div>
+
+        <div class="llm-field">
+          <label for="llm-key-input">API Key</label>
+          <div class="llm-key-row">
+            <input type="password" id="llm-key-input" placeholder="Paste API key here…" autocomplete="off">
+            <button type="button" id="llm-key-toggle">Show</button>
+          </div>
+          <div class="llm-help" id="llm-key-hint">Enter key for the selected provider</div>
+          <div class="llm-help" id="llm-key-status" style="color:var(--emerald);"></div>
+        </div>
+
+        <div class="row" style="margin-top:14px; align-items:center;">
+          <button type="button" id="llm-apply-btn" class="active">Apply LLM</button>
+          <span id="llm-status-msg" style="font:11px var(--mono); color:var(--muted);"></span>
+        </div>
+      </div>
+
       <!-- Speak & Ask Prompt -->
       <div class="card">
         <h2 class="label"><span>Conversation & Prompts</span></h2>
@@ -601,6 +668,182 @@
   document.querySelector('[data-act=sleep]').onclick = () => act("sleep", { on: true }, NAME + " asleep");
   document.querySelector('[data-act=test_speech]').onclick = () => act("say", { text: "Hello! My peripherals are online and working properly." });
   document.querySelector('[data-act=mic_sample]').onclick = () => act("tune", { key: "VAD_THRESHOLD", value: 0.25 }, "Mic tuned to baseline");
+
+  // ── LLM Provider & Model Configuration ────────────────────────────────────
+  const LLM_PROVIDERS = {
+    google: {
+      name: "Google Gemini",
+      baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai/",
+      models: [
+        { id: "gemini-3.8-flash", label: "gemini-3.8-flash (Recommended)" },
+        { id: "gemini-3.8-flash-lite-tts", label: "gemini-3.8-flash-lite-tts (Ultra Fast)" },
+        { id: "gemini-1.5-flash", label: "gemini-1.5-flash" },
+        { id: "gemini-1.5-pro", label: "gemini-1.5-pro" },
+        { id: "__custom__", label: "Custom model…" }
+      ],
+      keyHint: "Starts with AIzaSy... (from aistudio.google.com/apikey)"
+    },
+    openrouter: {
+      name: "OpenRouter",
+      baseUrl: "https://openrouter.ai/api/v1",
+      models: [
+        { id: "anthropic/claude-haiku-4.5", label: "anthropic/claude-haiku-4.5 (Best Character Voice)" },
+        { id: "anthropic/claude-3-haiku", label: "anthropic/claude-3-haiku (Fast & Low Cost)" },
+        { id: "google/gemini-2.0-flash-001", label: "google/gemini-2.0-flash-001 (Recommended)" },
+        { id: "openai/gpt-4o-mini", label: "openai/gpt-4o-mini" },
+        { id: "openai/gpt-4o", label: "openai/gpt-4o" },
+        { id: "deepseek/deepseek-chat", label: "deepseek/deepseek-chat" },
+        { id: "meta-llama/llama-3.3-70b-instruct", label: "meta-llama/llama-3.3-70b-instruct" },
+        { id: "__custom__", label: "Custom model…" }
+      ],
+      keyHint: "Starts with sk-or-v1... (from openrouter.ai/keys)"
+    },
+    openai: {
+      name: "OpenAI",
+      baseUrl: "https://api.openai.com/v1",
+      models: [
+        { id: "gpt-4o-mini", label: "gpt-4o-mini (Recommended)" },
+        { id: "gpt-4o", label: "gpt-4o" },
+        { id: "gpt-4.1-mini", label: "gpt-4.1-mini" },
+        { id: "gpt-4.1", label: "gpt-4.1" },
+        { id: "__custom__", label: "Custom model…" }
+      ],
+      keyHint: "Starts with sk-... (from platform.openai.com/api-keys)"
+    },
+    custom: {
+      name: "Custom Provider",
+      baseUrl: "",
+      models: [
+        { id: "__custom__", label: "Custom model…" }
+      ],
+      keyHint: "API key for your custom LLM host (if needed)"
+    }
+  };
+
+  const baseSelect = $("llm-base-select");
+  const modelSelect = $("llm-model-select");
+  const customUrlInput = $("llm-custom-url");
+  const customModelInput = $("llm-custom-model");
+  const keyInput = $("llm-key-input");
+  const keyToggle = $("llm-key-toggle");
+  const keyHint = $("llm-key-hint");
+  const keyStatus = $("llm-key-status");
+  const applyBtn = $("llm-apply-btn");
+  const statusMsg = $("llm-status-msg");
+
+  let userInteractingWithLlm = false;
+  let llmInitialized = false;
+
+  function populateModelDropdown(providerKey, selectedModelId) {
+    const prov = LLM_PROVIDERS[providerKey] || LLM_PROVIDERS.custom;
+    modelSelect.innerHTML = "";
+    let matched = false;
+    for (const m of prov.models) {
+      const opt = document.createElement("option");
+      opt.value = m.id;
+      opt.textContent = m.label;
+      if (selectedModelId && m.id === selectedModelId) {
+        opt.selected = true;
+        matched = true;
+      }
+      modelSelect.appendChild(opt);
+    }
+    if (!matched && selectedModelId) {
+      modelSelect.value = "__custom__";
+      customModelInput.value = selectedModelId;
+      customModelInput.style.display = "block";
+    } else if (modelSelect.value === "__custom__") {
+      customModelInput.style.display = "block";
+    } else {
+      customModelInput.style.display = "none";
+    }
+    keyHint.textContent = prov.keyHint;
+    if (providerKey === "custom") {
+      customUrlInput.style.display = "block";
+    } else {
+      customUrlInput.style.display = "none";
+    }
+  }
+
+  baseSelect.addEventListener("change", () => {
+    userInteractingWithLlm = true;
+    const prov = baseSelect.value;
+    if (prov === "custom") {
+      customUrlInput.style.display = "block";
+      customUrlInput.value = "";
+    } else {
+      customUrlInput.style.display = "none";
+    }
+    populateModelDropdown(prov);
+  });
+
+  modelSelect.addEventListener("change", () => {
+    userInteractingWithLlm = true;
+    if (modelSelect.value === "__custom__") {
+      customModelInput.style.display = "block";
+      customModelInput.focus();
+    } else {
+      customModelInput.style.display = "none";
+    }
+  });
+
+  keyInput.addEventListener("input", () => {
+    userInteractingWithLlm = true;
+  });
+
+  keyToggle.addEventListener("click", () => {
+    if (keyInput.type === "password") {
+      keyInput.type = "text";
+      keyToggle.textContent = "Hide";
+    } else {
+      keyInput.type = "password";
+      keyToggle.textContent = "Show";
+    }
+  });
+
+  applyBtn.addEventListener("click", async () => {
+    const prov = baseSelect.value;
+    let baseUrl = prov === "custom" ? customUrlInput.value.trim() : LLM_PROVIDERS[prov].baseUrl;
+    let model = modelSelect.value === "__custom__" ? customModelInput.value.trim() : modelSelect.value;
+    const apiKey = keyInput.value.trim();
+
+    if (!baseUrl) {
+      toast("Base URL is required", true);
+      return;
+    }
+    if (!model) {
+      toast("Model identifier is required", true);
+      return;
+    }
+
+    applyBtn.disabled = true;
+    statusMsg.textContent = "Applying…";
+    try {
+      const res = await api("set_llm", {
+        base_url: baseUrl,
+        model: model,
+        api_key: apiKey || undefined
+      });
+      toast("LLM updated to " + model);
+      keyInput.value = "";
+      userInteractingWithLlm = false;
+      statusMsg.textContent = "Saved";
+      setTimeout(() => { statusMsg.textContent = ""; }, 3000);
+      if (res && res.model) {
+        const vm = $("vital-model");
+        if (vm) vm.textContent = res.model;
+        const tm = $("thought-model");
+        if (tm) tm.textContent = "Model: " + res.model;
+        const ad = $("llm-active-desc");
+        if (ad) ad.textContent = `Active: ${LLM_PROVIDERS[prov]?.name || "Custom Provider"} · ${res.model}`;
+      }
+    } catch (err) {
+      toast("Failed to update LLM: " + err.message, true);
+      statusMsg.textContent = "Error";
+    } finally {
+      applyBtn.disabled = false;
+    }
+  });
 
   // Tune sliders builder
   function slider(into, t, action) {
@@ -781,6 +1024,37 @@
       }
       $("thought-model").textContent = "Model: " + (s.model || "claude / gpt-4");
       $("thought-q").textContent = thought.question ? `Q: "${thought.question}"` : "";
+
+      // LLM Display & Sync
+      const currentModel = s.model || "—";
+      const currentBaseUrl = s.llm_base_url || "";
+      const currentProvider = s.llm_provider || "custom";
+      if ($("vital-model")) $("vital-model").textContent = currentModel;
+      
+      const providerLabel = LLM_PROVIDERS[currentProvider]?.name || "Custom Provider";
+      $("llm-active-desc").textContent = `Active: ${providerLabel} · ${currentModel}`;
+      $("llm-badge").textContent = s.has_llm_key ? "Active" : "No Key";
+      $("llm-badge").className = "badge " + (s.has_llm_key ? "ok" : "warn");
+
+      if (s.has_llm_key) {
+        $("llm-key-status").textContent = s.masked_llm_key 
+          ? `✓ Key active (${s.masked_llm_key}). Enter a new one to replace.`
+          : "✓ Key loaded in environment. Enter a new one to replace.";
+        $("llm-key-status").style.color = "var(--emerald)";
+      } else {
+        $("llm-key-status").textContent = "⚠️ No API key set! Paste a valid key above.";
+        $("llm-key-status").style.color = "var(--astro)";
+      }
+
+      if (!llmInitialized && !userInteractingWithLlm && s.model) {
+        llmInitialized = true;
+        baseSelect.value = currentProvider;
+        if (currentProvider === "custom") {
+          customUrlInput.style.display = "block";
+          customUrlInput.value = currentBaseUrl;
+        }
+        populateModelDropdown(currentProvider, currentModel);
+      }
 
       // Camera Viewport
       const fresh = !!s.camera_fresh;

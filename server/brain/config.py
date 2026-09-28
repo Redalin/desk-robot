@@ -7,15 +7,18 @@ from pathlib import Path
 # API keys live in server/.env (git-ignored; see .env.example), one KEY=VALUE
 # per line. Anything already exported in the shell wins over the file.
 _ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
-if _ENV_FILE.is_file():
-    for _line in _ENV_FILE.read_text().splitlines():
-        _line = _line.strip()
-        if not _line or _line.startswith("#") or "=" not in _line:
-            continue
-        _k, _v = _line.split("=", 1)
-        _v = _v.strip().strip("'\"")
-        if _v:  # a blank line in .env means "not set", not "set to nothing"
-            os.environ.setdefault(_k.strip(), _v)
+try:
+    if _ENV_FILE.is_file():
+        for _line in _ENV_FILE.read_text().splitlines():
+            _line = _line.strip()
+            if not _line or _line.startswith("#") or "=" not in _line:
+                continue
+            _k, _v = _line.split("=", 1)
+            _v = _v.strip().strip("'\"")
+            if _v:  # a blank line in .env means "not set", not "set to nothing"
+                os.environ.setdefault(_k.strip(), _v)
+except Exception:
+    pass
 
 # The robot's name — the wake word is "hey <name>".
 ROBOT_NAME = os.environ.get("ROBOT_NAME", "Rocky")
@@ -27,7 +30,52 @@ HUMAN_NAME = os.environ.get("HUMAN_NAME", "friend")
 # Language model. The brain speaks the OpenAI-style chat API, which
 # OpenRouter, Anthropic, OpenAI, and Google Gemini all serve.
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/")
-MODEL = os.environ.get("MODEL", "gemini-2.5-flash")
+MODEL = os.environ.get("MODEL", "gemini-2.0-flash")
+
+# LLM_BASE_URL = "https://openrouter.ai/api/v1"
+# MODEL = "anthropic/claude-haiku-4.5"
+
+
+def save_llm_config(base_url: str, model: str, api_key: str | None = None) -> None:
+    """Update runtime LLM settings and persist them to server/.env if available."""
+    global LLM_BASE_URL, MODEL
+    LLM_BASE_URL = base_url
+    MODEL = model
+    os.environ["LLM_BASE_URL"] = base_url
+    os.environ["MODEL"] = model
+    if api_key:
+        os.environ["LLM_API_KEY"] = api_key
+
+    try:
+        lines: list[str] = []
+        if _ENV_FILE.is_file():
+            lines = _ENV_FILE.read_text(encoding="utf-8").splitlines()
+
+        keys_to_set = {"LLM_BASE_URL": base_url, "MODEL": model}
+        if api_key:
+            keys_to_set["LLM_API_KEY"] = api_key
+
+        new_lines: list[str] = []
+        found_keys: set[str] = set()
+
+        for line in lines:
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#") and "=" in stripped:
+                k, _ = stripped.split("=", 1)
+                k = k.strip()
+                if k in keys_to_set:
+                    new_lines.append(f'{k}="{keys_to_set[k]}"')
+                    found_keys.add(k)
+                    continue
+            new_lines.append(line)
+
+        for k, v in keys_to_set.items():
+            if k not in found_keys:
+                new_lines.append(f'{k}="{v}"')
+
+        _ENV_FILE.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    except Exception as e:
+        print(f"(warning: could not write LLM settings to {_ENV_FILE}: {e})")
 
 # WebSocket port the robot connects to.
 PORT = int(os.environ.get("PORT", 8765))
