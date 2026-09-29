@@ -525,6 +525,7 @@
           <div class="llm-key-row">
             <input type="password" id="llm-key-input" placeholder="Paste API key here…" autocomplete="off">
             <button type="button" id="llm-key-toggle">Show</button>
+            <button type="button" id="llm-key-reset" style="display:none;" title="Revert to configured key">Revert</button>
           </div>
           <div class="llm-help" id="llm-key-hint">Enter key for the selected provider</div>
           <div class="llm-help" id="llm-key-status" style="color:var(--emerald);"></div>
@@ -676,7 +677,7 @@
       baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai/",
       models: [
         { id: "gemini-3.8-flash", label: "gemini-3.8-flash (Recommended)" },
-        { id: "gemini-3.8-live", label: "gemini-3.8-live (Ultra Fast)" },
+        { id: "gemini-3.8-flash-tts", label: "gemini-3.8-flash-tts (Ultra Fast)" },
         { id: "__custom__", label: "Custom model…" }
       ],
       keyHint: "Starts with AIzaSy... (from aistudio.google.com/apikey)"
@@ -724,6 +725,7 @@
   const customModelInput = $("llm-custom-model");
   const keyInput = $("llm-key-input");
   const keyToggle = $("llm-key-toggle");
+  const keyReset = $("llm-key-reset");
   const keyHint = $("llm-key-hint");
   const keyStatus = $("llm-key-status");
   const applyBtn = $("llm-apply-btn");
@@ -731,6 +733,29 @@
 
   let userInteractingWithLlm = false;
   let llmInitialized = false;
+  let providerKeys = {};
+
+  function maskKey(k) {
+    if (!k) return "";
+    if (k.length <= 8) return "..." + k.slice(-3);
+    return k.slice(0, 4) + "..." + k.slice(-4);
+  }
+
+  function updateKeyUIForProvider(prov) {
+    const provInfo = providerKeys[prov] || {};
+    const currentKey = provInfo.key || "";
+
+    keyInput.value = currentKey;
+
+    if (provInfo.has_key) {
+      keyStatus.textContent = `✓ Key configured (${provInfo.masked_key || maskKey(currentKey)}). You can enter a new key to override.`;
+      keyStatus.style.color = "var(--emerald)";
+    } else {
+      keyStatus.textContent = `⚠️ No key configured for ${LLM_PROVIDERS[prov]?.name || prov}. Enter your API key above.`;
+      keyStatus.style.color = "var(--astro)";
+    }
+    if (keyReset) keyReset.style.display = "none";
+  }
 
   function populateModelDropdown(providerKey, selectedModelId) {
     const prov = LLM_PROVIDERS[providerKey] || LLM_PROVIDERS.custom;
@@ -773,6 +798,7 @@
       customUrlInput.style.display = "none";
     }
     populateModelDropdown(prov);
+    updateKeyUIForProvider(prov);
   });
 
   modelSelect.addEventListener("change", () => {
@@ -787,7 +813,38 @@
 
   keyInput.addEventListener("input", () => {
     userInteractingWithLlm = true;
+    const prov = baseSelect.value;
+    const provInfo = providerKeys[prov] || {};
+    const val = keyInput.value.trim();
+    if (val && val !== provInfo.key) {
+      keyStatus.textContent = "✎ Manual key entered. Click 'Apply LLM' to save.";
+      keyStatus.style.color = "var(--amber)";
+      if (keyReset && provInfo.has_key) {
+        keyReset.style.display = "inline-block";
+      }
+    } else if (!val && provInfo.has_key) {
+      keyStatus.textContent = `Configured key (${provInfo.masked_key || maskKey(provInfo.key)}) will be used on Apply if left blank.`;
+      keyStatus.style.color = "var(--muted)";
+      if (keyReset && provInfo.has_key) {
+        keyReset.style.display = "inline-block";
+      }
+    } else {
+      updateKeyUIForProvider(prov);
+    }
   });
+
+  if (keyReset) {
+    keyReset.addEventListener("click", () => {
+      const prov = baseSelect.value;
+      const provInfo = providerKeys[prov] || {};
+      if (provInfo.key) {
+        keyInput.value = provInfo.key;
+        keyStatus.textContent = `✓ Reverted to configured key (${provInfo.masked_key || maskKey(provInfo.key)}).`;
+        keyStatus.style.color = "var(--emerald)";
+        keyReset.style.display = "none";
+      }
+    });
+  }
 
   keyToggle.addEventListener("click", () => {
     if (keyInput.type === "password") {
@@ -823,8 +880,11 @@
         api_key: apiKey || undefined
       });
       toast("LLM updated to " + model);
-      keyInput.value = "";
+      if (res && res.provider_keys) {
+        providerKeys = res.provider_keys;
+      }
       userInteractingWithLlm = false;
+      updateKeyUIForProvider(prov);
       statusMsg.textContent = "Saved";
       setTimeout(() => { statusMsg.textContent = ""; }, 3000);
       if (res && res.model) {
@@ -1034,14 +1094,8 @@
       $("llm-badge").textContent = s.has_llm_key ? "Active" : "No Key";
       $("llm-badge").className = "badge " + (s.has_llm_key ? "ok" : "warn");
 
-      if (s.has_llm_key) {
-        $("llm-key-status").textContent = s.masked_llm_key 
-          ? `✓ Key active (${s.masked_llm_key}). Enter a new one to replace.`
-          : "✓ Key loaded in environment. Enter a new one to replace.";
-        $("llm-key-status").style.color = "var(--emerald)";
-      } else {
-        $("llm-key-status").textContent = "⚠️ No API key set! Paste a valid key above.";
-        $("llm-key-status").style.color = "var(--astro)";
+      if (s.provider_keys) {
+        providerKeys = s.provider_keys;
       }
 
       if (!llmInitialized && !userInteractingWithLlm && s.model) {
@@ -1052,6 +1106,9 @@
           customUrlInput.value = currentBaseUrl;
         }
         populateModelDropdown(currentProvider, currentModel);
+        updateKeyUIForProvider(currentProvider);
+      } else if (!userInteractingWithLlm && baseSelect.value === currentProvider) {
+        updateKeyUIForProvider(currentProvider);
       }
 
       // Camera Viewport

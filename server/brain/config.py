@@ -4,21 +4,55 @@ import os
 from pathlib import Path
 
 # ── Secrets ──────────────────────────────────────────────────────────────────
-# API keys live in server/.env (git-ignored; see .env.example), one KEY=VALUE
-# per line. Anything already exported in the shell wins over the file.
+# API keys are taken from:
+# 1. Environment variables passed in from docker/podman or the shell
+# 2. server/.env (git-ignored; see .env.example)
+# 3. Manual key input from the web interface (persisted to server/.env)
 _ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
-try:
-    if _ENV_FILE.is_file():
-        for _line in _ENV_FILE.read_text().splitlines():
-            _line = _line.strip()
-            if not _line or _line.startswith("#") or "=" not in _line:
+
+
+def _read_env_file(path: Path) -> dict[str, str]:
+    res: dict[str, str] = {}
+    if not path.is_file():
+        return res
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
                 continue
-            _k, _v = _line.split("=", 1)
-            _v = _v.strip().strip("'\"")
-            if _v:  # a blank line in .env means "not set", not "set to nothing"
-                os.environ.setdefault(_k.strip(), _v)
-except Exception:
-    pass
+            k, v = line.split("=", 1)
+            k = k.strip()
+            v = v.strip()
+            if v.startswith(('"', "'")):
+                q = v[0]
+                end_q = v.find(q, 1)
+                v = v[1:end_q] if end_q != -1 else v.strip("'\"")
+            else:
+                if "#" in v:
+                    v = v.split("#", 1)[0].strip()
+                v = v.strip("'\"")
+            if v:
+                res[k] = v
+    except Exception:
+        pass
+    return res
+
+
+# Load keys from .env. Environment variables from docker/podman/shell win via setdefault.
+for _k, _v in _read_env_file(_ENV_FILE).items():
+    os.environ.setdefault(_k, _v)
+
+
+def get_provider_key(provider: str) -> str:
+    """Return the active API key for a provider from environment / .env."""
+    p = (provider or "").lower()
+    if p == "google":
+        return os.environ.get("GEMINI_API_KEY") or os.environ.get("LLM_API_KEY", "")
+    elif p == "openrouter":
+        return os.environ.get("OPENROUTER_API_KEY") or os.environ.get("LLM_API_KEY", "")
+    elif p == "openai":
+        return os.environ.get("OPENAI_API_KEY") or os.environ.get("LLM_API_KEY", "")
+    return os.environ.get("LLM_API_KEY", "")
 
 # The robot's name — the wake word is "hey <name>".
 ROBOT_NAME = os.environ.get("ROBOT_NAME", "Rocky")
@@ -32,8 +66,13 @@ HUMAN_NAME = os.environ.get("HUMAN_NAME", "friend")
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/")
 MODEL = os.environ.get("MODEL", "gemini-2.0-flash")
 
-# LLM_BASE_URL = "https://openrouter.ai/api/v1"
-# MODEL = "anthropic/claude-haiku-4.5"
+# Ensure LLM_API_KEY is initialized to provider default if not already set
+if not os.environ.get("LLM_API_KEY"):
+    _url = LLM_BASE_URL.lower()
+    _init_prov = "google" if "generativelanguage.googleapis.com" in _url else ("openrouter" if "openrouter.ai" in _url else ("openai" if "api.openai.com" in _url else "custom"))
+    _init_k = get_provider_key(_init_prov)
+    if _init_k:
+        os.environ["LLM_API_KEY"] = _init_k
 
 
 def save_llm_config(base_url: str, model: str, api_key: str | None = None) -> None:
@@ -43,8 +82,32 @@ def save_llm_config(base_url: str, model: str, api_key: str | None = None) -> No
     MODEL = model
     os.environ["LLM_BASE_URL"] = base_url
     os.environ["MODEL"] = model
-    if api_key:
-        os.environ["LLM_API_KEY"] = api_key
+
+    url_lower = (base_url or "").lower()
+    if "generativelanguage.googleapis.com" in url_lower:
+        provider = "google"
+    elif "openrouter.ai" in url_lower:
+        provider = "openrouter"
+    elif "api.openai.com" in url_lower:
+        provider = "openai"
+    else:
+        provider = "custom"
+
+    provider_env_keys = {
+        "google": "GEMINI_API_KEY",
+        "openrouter": "OPENROUTER_API_KEY",
+        "openai": "OPENAI_API_KEY",
+    }
+    target_env_var = provider_env_keys.get(provider)
+
+    effective_key = api_key.strip() if api_key else ""
+    if not effective_key:
+        effective_key = get_provider_key(provider)
+
+    if effective_key:
+        os.environ["LLM_API_KEY"] = effective_key
+        if api_key and target_env_var:
+            os.environ[target_env_var] = effective_key
 
     try:
         lines: list[str] = []
@@ -52,8 +115,10 @@ def save_llm_config(base_url: str, model: str, api_key: str | None = None) -> No
             lines = _ENV_FILE.read_text(encoding="utf-8").splitlines()
 
         keys_to_set = {"LLM_BASE_URL": base_url, "MODEL": model}
-        if api_key:
-            keys_to_set["LLM_API_KEY"] = api_key
+        if effective_key:
+            keys_to_set["LLM_API_KEY"] = effective_key
+        if api_key and target_env_var:
+            keys_to_set[target_env_var] = effective_key
 
         new_lines: list[str] = []
         found_keys: set[str] = set()

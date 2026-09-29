@@ -775,6 +775,14 @@ def console_state() -> dict:
         "llm_provider": get_llm_provider(config.LLM_BASE_URL),
         "has_llm_key": bool(os.environ.get("LLM_API_KEY")),
         "masked_llm_key": get_masked_key(os.environ.get("LLM_API_KEY", "")),
+        "provider_keys": {
+            prov: {
+                "key": config.get_provider_key(prov) if prov != "custom" else (os.environ.get("LLM_API_KEY", "") if get_llm_provider(config.LLM_BASE_URL) == "custom" else ""),
+                "masked_key": get_masked_key(config.get_provider_key(prov) if prov != "custom" else (os.environ.get("LLM_API_KEY", "") if get_llm_provider(config.LLM_BASE_URL) == "custom" else "")),
+                "has_key": bool(config.get_provider_key(prov) if prov != "custom" else (os.environ.get("LLM_API_KEY", "") if get_llm_provider(config.LLM_BASE_URL) == "custom" else "")),
+            }
+            for prov in ("google", "openrouter", "openai", "custom")
+        },
     }
 
 
@@ -901,6 +909,14 @@ async def _console_command(action: str, payload: dict) -> dict:
             "llm_provider": provider_name,
             "has_llm_key": bool(os.environ.get("LLM_API_KEY")),
             "masked_llm_key": get_masked_key(os.environ.get("LLM_API_KEY", "")),
+            "provider_keys": {
+                prov: {
+                    "key": config.get_provider_key(prov) if prov != "custom" else (os.environ.get("LLM_API_KEY", "") if provider_name == "custom" else ""),
+                    "masked_key": get_masked_key(config.get_provider_key(prov) if prov != "custom" else (os.environ.get("LLM_API_KEY", "") if provider_name == "custom" else "")),
+                    "has_key": bool(config.get_provider_key(prov) if prov != "custom" else (os.environ.get("LLM_API_KEY", "") if provider_name == "custom" else "")),
+                }
+                for prov in ("google", "openrouter", "openai", "custom")
+            },
         }
     else:
         raise ValueError(f"no such control: {action}")
