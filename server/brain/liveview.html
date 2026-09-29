@@ -734,6 +734,7 @@
   let userInteractingWithLlm = false;
   let llmInitialized = false;
   let providerKeys = {};
+  let providerKeysLoaded = false;
 
   function maskKey(k) {
     if (!k) return "";
@@ -742,6 +743,12 @@
   }
 
   function updateKeyUIForProvider(prov) {
+    if (!providerKeysLoaded) {
+      keyStatus.textContent = "Checking configured keys…";
+      keyStatus.style.color = "var(--muted)";
+      if (keyReset) keyReset.style.display = "none";
+      return;
+    }
     const provInfo = providerKeys[prov] || {};
     const currentKey = provInfo.key || "";
 
@@ -1096,6 +1103,14 @@
 
       if (s.provider_keys) {
         providerKeys = s.provider_keys;
+        providerKeysLoaded = true;
+      } else if (s.has_llm_key) {
+        providerKeys[currentProvider] = {
+          has_key: true,
+          key: "",
+          masked_key: s.masked_llm_key || "active"
+        };
+        providerKeysLoaded = true;
       }
 
       if (!llmInitialized && !userInteractingWithLlm && s.model) {

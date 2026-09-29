@@ -22,9 +22,16 @@ services:
       - HUMAN_NAME
       - ROBOT_NAME
       - FISH_AUDIO_API_KEY
+      - OPENROUTER_API_KEY
+      - GEMINI_API_KEY
+      - GOOGLE_API_KEY
+      - OPENAI_API_KEY
+      - GROQ_API_KEY
       - LIVE_VIEW_BIND=0.0.0.0
       - LIVE_VIEW_PORT=8766
     volumes:
+      # Mount brain so code and liveview updates are immediately available
+      - ./brain:/app/brain
       # Persist downloaded speech models (Whisper, Silero VAD, Smart Turn)
       - brain-cache:/root/.cache
       # Optional: mount debug output directory to inspect TTS audio / recordings

@@ -8,7 +8,13 @@ from pathlib import Path
 # 1. Environment variables passed in from docker/podman or the shell
 # 2. server/.env (git-ignored; see .env.example)
 # 3. Manual key input from the web interface (persisted to server/.env)
-_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
+_ENV_CANDIDATE_PATHS = [
+    Path(__file__).resolve().parent.parent / ".env",
+    Path.cwd() / ".env",
+    Path.cwd() / "server" / ".env",
+    Path("/app/.env"),
+    Path("/app/server/.env"),
+]
 
 
 def _read_env_file(path: Path) -> dict[str, str]:
@@ -38,21 +44,60 @@ def _read_env_file(path: Path) -> dict[str, str]:
     return res
 
 
-# Load keys from .env. Environment variables from docker/podman/shell win via setdefault.
-for _k, _v in _read_env_file(_ENV_FILE).items():
-    os.environ.setdefault(_k, _v)
+# Load keys from .env if present. Environment variables from docker/podman/shell win via setdefault.
+_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
+for _p in _ENV_CANDIDATE_PATHS:
+    if _p.is_file():
+        _ENV_FILE = _p
+        for _k, _v in _read_env_file(_p).items():
+            os.environ.setdefault(_k, _v)
+        break
+
+
+def _get_env_any(*names: str) -> str:
+    """Check exact then case-insensitive names in os.environ."""
+    for name in names:
+        val = os.environ.get(name)
+        if val and val.strip():
+            return val.strip().strip("'\"")
+    lower_map = {k.lower(): v for k, v in os.environ.items()}
+    for name in names:
+        val = lower_map.get(name.lower())
+        if val and val.strip():
+            return val.strip().strip("'\"")
+    return ""
 
 
 def get_provider_key(provider: str) -> str:
     """Return the active API key for a provider from environment / .env."""
     p = (provider or "").lower()
+    llm_key = _get_env_any("LLM_API_KEY")
+
     if p == "google":
-        return os.environ.get("GEMINI_API_KEY") or os.environ.get("LLM_API_KEY", "")
+        key = _get_env_any("GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_AI_API_KEY", "GEMINI_KEY")
+        if key:
+            return key
+        if llm_key and (llm_key.startswith(("AQ.", "AIza")) or "generativelanguage.googleapis.com" in os.environ.get("LLM_BASE_URL", "").lower()):
+            return llm_key
+        return llm_key if "generativelanguage.googleapis.com" in os.environ.get("LLM_BASE_URL", "").lower() else ""
+
     elif p == "openrouter":
-        return os.environ.get("OPENROUTER_API_KEY") or os.environ.get("LLM_API_KEY", "")
+        key = _get_env_any("OPENROUTER_API_KEY", "OPENROUTER_KEY", "OPEN_ROUTER_API_KEY", "OPEN_ROUTER_KEY")
+        if key:
+            return key
+        if llm_key and llm_key.startswith("sk-or-"):
+            return llm_key
+        return llm_key if "openrouter.ai" in os.environ.get("LLM_BASE_URL", "").lower() else ""
+
     elif p == "openai":
-        return os.environ.get("OPENAI_API_KEY") or os.environ.get("LLM_API_KEY", "")
-    return os.environ.get("LLM_API_KEY", "")
+        key = _get_env_any("OPENAI_API_KEY", "OPENAI_KEY")
+        if key:
+            return key
+        if llm_key and llm_key.startswith("sk-") and not llm_key.startswith("sk-or-") and not llm_key.startswith("sk-fish-"):
+            return llm_key
+        return llm_key if "api.openai.com" in os.environ.get("LLM_BASE_URL", "").lower() else ""
+
+    return llm_key
 
 # The robot's name — the wake word is "hey <name>".
 ROBOT_NAME = os.environ.get("ROBOT_NAME", "Rocky")
